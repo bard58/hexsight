@@ -1,0 +1,29 @@
+{
+    "version": "0.1.0",
+    "description": "A free helper for ARAM Mayhem. Shows the tier and the sample size of each offered augment.",
+    "homepage": "https://github.com/bard58/hexsight",
+    "license": {
+        "identifier": "MIT|Apache-2.0",
+        "url": "https://github.com/bard58/hexsight/blob/main/LICENSE-MIT"
+    },
+    "notes": "Set League of Legends to Borderless window mode. Hexsight runs in portable mode: your data is in the Hexsight-data folder, which Scoop keeps across updates. Hexsight isn't endorsed by Riot Games. See the README for the full notice.",
+    "url": "https://github.com/bard58/hexsight/releases/download/v0.1.0/hexsight-v0.1.0-windows-x64-portable.zip",
+    "hash": "REPLACE-WITH-SHA256",
+    "bin": "Hexsight.exe",
+    "shortcuts": [
+        [
+            "Hexsight.exe",
+            "Hexsight"
+        ]
+    ],
+    "persist": "Hexsight-data",
+    "checkver": {
+        "github": "https://github.com/bard58/hexsight"
+    },
+    "autoupdate": {
+        "url": "https://github.com/bard58/hexsight/releases/download/v$version/hexsight-v$version-windows-x64-portable.zip",
+        "hash": {
+            "url": "$url.sha256"
+        }
+    }
+}

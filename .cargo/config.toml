@@ -1,0 +1,6 @@
+# Optional. Cargo builds into the `target` folder of the project by default.
+# Uncomment these lines to keep the build output in another folder, for example
+# on a fast drive or outside a cloud-synced folder.
+#
+# [build]
+# target-dir = "C:/cache/hexsight-target"

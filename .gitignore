@@ -1,0 +1,29 @@
+# Build output
+/target/
+*.exe
+*.pdb
+
+# Test output and local data
+/shots/
+ocr-result.txt
+last-scan.png
+last-scan.txt
+history.json
+history.bad.json
+settings.json
+*.log
+
+# Mock League Client: generated at run time
+/tools/mock/league/
+/tools/mock/*.pem
+
+# Release files made by hand
+/dist/
+*.sha256
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+Desktop.ini

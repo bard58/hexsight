@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- DRAFT. Do not submit before the first release exists. -->
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>hexsight</id>
+    <version>0.1.0</version>
+    <title>Hexsight</title>
+    <authors>bard58</authors>
+    <owners>bard58</owners>
+    <projectUrl>https://github.com/bard58/hexsight</projectUrl>
+    <projectSourceUrl>https://github.com/bard58/hexsight</projectSourceUrl>
+    <docsUrl>https://github.com/bard58/hexsight/blob/main/README.md</docsUrl>
+    <bugTrackerUrl>https://github.com/bard58/hexsight/issues</bugTrackerUrl>
+    <licenseUrl>https://github.com/bard58/hexsight/blob/main/LICENSE-MIT</licenseUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <iconUrl>https://raw.githubusercontent.com/bard58/hexsight/main/assets/icon-256.png</iconUrl>
+    <copyright>Copyright (c) 2026 bard58</copyright>
+    <tags>hexsight aram augments overlay ocr helper rust game-tools</tags>
+    <summary>A free helper for ARAM Mayhem. Shows the tier and the sample size of each offered augment.</summary>
+    <description>
+Hexsight reads the three augment cards that you are offered in ARAM Mayhem and shows the games behind each tier and a confidence meter. It also helps in champion select with bench tiers, trades, and item sets.
+
+It does not read game memory, inject code, or send input. Your data stays on your PC. There is no account, no telemetry, and no ads.
+
+Set League of Legends to Borderless window mode. Hexsight copies pixels from the screen.
+
+Hexsight is licensed under MIT OR Apache-2.0, at your option. The data it downloads keeps its own licenses.
+
+Hexsight isn't endorsed by Riot Games and doesn't reflect the views or opinions of Riot Games or anyone officially involved in producing or managing Riot Games properties. Riot Games, and all associated properties are trademarks or registered trademarks of Riot Games, Inc.
+    </description>
+    <releaseNotes>https://github.com/bard58/hexsight/releases/tag/v0.1.0</releaseNotes>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>

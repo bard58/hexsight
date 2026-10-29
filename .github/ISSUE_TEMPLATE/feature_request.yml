@@ -1,0 +1,32 @@
+name: Feature request
+description: Ask for a new feature or a change.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Hexsight is a small tool and stays inside Riot's rules for helper apps. We do not accept requests for memory reading, code injection, input automation, bots, or "pick this" advice. Read [CONTRIBUTING.md](https://github.com/bard58/hexsight/blob/main/CONTRIBUTING.md) first.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem do you want to solve?
+      description: "Describe the situation, not the solution."
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What do you suggest?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Other ways to solve it
+  - type: checkboxes
+    id: rules
+    attributes:
+      label: Fair play
+      options:
+        - label: My request does not read game memory, inject code, send input to the game, or tell the player which augment to pick
+          required: true

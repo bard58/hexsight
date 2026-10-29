@@ -1,0 +1,120 @@
+name: Release
+
+# Run when you push a tag that starts with "v", for example v0.1.0.
+# The workflow makes a DRAFT release. Open it on GitHub, read it, then publish it by hand.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: Build and upload
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo files
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check that the tag matches the version in Cargo.toml
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}".TrimStart("v")
+          $line = Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"(.+)"' | Select-Object -First 1
+          $version = $line.Matches[0].Groups[1].Value
+          if ($tag -ne $version) {
+            throw "Tag v$tag does not match Cargo.toml version $version"
+          }
+
+      - name: Build the release exe
+        run: cargo build --release --locked
+
+      # The exe holds the source paths of the build machine. On the runner they name only runneradmin.
+      - name: Check the exe for paths of a personal user folder
+        shell: pwsh
+        run: |
+          $text = [Text.Encoding]::Latin1.GetString([IO.File]::ReadAllBytes('target\release\hexsight.exe'))
+          $m = [regex]::Match($text, '(?i)[A-Z]:[\\/]+Users[\\/]+(?!runneradmin[\\/])[A-Za-z0-9._ -]+[\\/]')
+          if ($m.Success) { throw "The exe holds a personal user path: $($m.Value)" }
+
+      - name: Rename the exe
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $name = "hexsight-${{ github.ref_name }}-windows-x64.exe"
+          Copy-Item target\release\hexsight.exe "dist\$name"
+          "EXE_NAME=$name" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # ---------------------------------------------------------------
+      # CODE SIGNING (draft, off). Turn it on after SignPath Foundation
+      # approves the project. Check the current SignPath documentation for
+      # the exact inputs. Sign BEFORE the zip and hash steps below, so the
+      # zip holds the signed exe and the hash files match the signed files.
+      #
+      # - name: Upload the unsigned exe for signing
+      #   id: upload-unsigned
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: unsigned-exe
+      #     path: dist/${{ env.EXE_NAME }}
+      #
+      # - name: Sign with SignPath
+      #   uses: signpath/github-action-submit-signing-request@v1
+      #   with:
+      #     api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+      #     organization-id: "<SIGNPATH-ORGANIZATION-ID>"
+      #     project-slug: "hexsight"
+      #     signing-policy-slug: "release-signing"
+      #     github-artifact-id: ${{ steps.upload-unsigned.outputs.artifact-id }}
+      #     wait-for-completion: true
+      #     output-artifact-directory: signed
+      #
+      # - name: Use the signed exe
+      #   shell: pwsh
+      #   run: Copy-Item "signed\${{ env.EXE_NAME }}" "dist\${{ env.EXE_NAME }}" -Force
+      # ---------------------------------------------------------------
+
+      # The portable zip: Hexsight.exe and the marker file Hexsight.portable at the
+      # zip root. With the marker next to it, the exe keeps its data in the
+      # Hexsight-data folder next to it.
+      - name: Make the portable zip
+        shell: pwsh
+        run: |
+          $name = "hexsight-${{ github.ref_name }}-windows-x64-portable.zip"
+          $stage = "dist\portable"
+          New-Item -ItemType Directory -Force $stage | Out-Null
+          Copy-Item "dist\$env:EXE_NAME" "$stage\Hexsight.exe"
+          Copy-Item assets\Hexsight.portable "$stage\Hexsight.portable"
+          Compress-Archive -Path "$stage\Hexsight.exe", "$stage\Hexsight.portable" -DestinationPath "dist\$name"
+          Remove-Item $stage -Recurse -Force
+          "ZIP_NAME=$name" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Write the SHA-256 files
+        shell: pwsh
+        run: |
+          foreach ($file in @($env:EXE_NAME, $env:ZIP_NAME)) {
+            $hash = (Get-FileHash "dist\$file" -Algorithm SHA256).Hash.ToLower()
+            "$hash  $file" | Out-File -FilePath "dist\$file.sha256" -Encoding ascii
+          }
+
+      - name: Make a draft release and upload the files
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" `
+            "dist\$env:EXE_NAME" "dist\$env:EXE_NAME.sha256" `
+            "dist\$env:ZIP_NAME" "dist\$env:ZIP_NAME.sha256" `
+            --title "Hexsight ${{ github.ref_name }}" `
+            --generate-notes `
+            --draft

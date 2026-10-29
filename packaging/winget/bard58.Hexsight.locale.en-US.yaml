@@ -1,0 +1,31 @@
+# DRAFT. Do not submit before the first release exists.
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
+PackageIdentifier: bard58.Hexsight
+PackageVersion: 0.1.0
+PackageLocale: en-US
+Publisher: bard58
+PublisherUrl: https://github.com/bard58
+PublisherSupportUrl: https://github.com/bard58/hexsight/issues
+PrivacyUrl: https://github.com/bard58/hexsight/blob/main/PRIVACY.md
+Author: bard58
+PackageName: Hexsight
+PackageUrl: https://github.com/bard58/hexsight
+License: MIT OR Apache-2.0
+LicenseUrl: https://github.com/bard58/hexsight/blob/main/LICENSE-MIT
+Copyright: Copyright (c) 2026 bard58
+ShortDescription: A free helper for ARAM Mayhem. It shows the tier and the sample size of each offered augment.
+Description: |-
+  Hexsight reads the three augment cards that you are offered in ARAM Mayhem and shows the games behind each tier and a confidence meter. It also helps in champion select with bench tiers, trades, and item sets. It does not read game memory, inject code, or send input. Your data stays on your PC.
+  Hexsight isn't endorsed by Riot Games and doesn't reflect the views or opinions of Riot Games or anyone officially involved in producing or managing Riot Games properties. Riot Games, and all associated properties are trademarks or registered trademarks of Riot Games, Inc.
+Moniker: hexsight
+Tags:
+  - aram
+  - augments
+  - overlay
+  - ocr
+  - helper
+  - rust
+  - game-tools
+ReleaseNotesUrl: https://github.com/bard58/hexsight/releases/tag/v0.1.0
+ManifestType: defaultLocale
+ManifestVersion: 1.12.0

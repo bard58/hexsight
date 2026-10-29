@@ -1,0 +1,17 @@
+Hexsight portable mode
+
+This file turns on portable mode. Keep it next to Hexsight.exe.
+Hexsight then keeps its settings, history and cache in the Hexsight-data
+folder next to the exe, not in %LOCALAPPDATA%\Hexsight.
+The content of this file does not matter.
+Delete this file to use %LOCALAPPDATA%\Hexsight again.
+If Hexsight cannot write next to the exe, it uses %LOCALAPPDATA%\Hexsight.
+
+Hexsight taşınabilir mod
+
+Bu dosya taşınabilir modu açar. Dosyayı Hexsight.exe ile aynı klasörde tut.
+Hexsight ayarlarını, maç geçmişini ve önbelleğini %LOCALAPPDATA%\Hexsight
+yerine exe'nin yanındaki Hexsight-data klasöründe saklar.
+Dosyanın içeriği önemli değil.
+%LOCALAPPDATA%\Hexsight klasörüne dönmek için bu dosyayı sil.
+Hexsight exe'nin yanına yazamazsa %LOCALAPPDATA%\Hexsight klasörünü kullanır.

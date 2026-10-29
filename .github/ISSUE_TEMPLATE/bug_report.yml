@@ -1,0 +1,69 @@
+name: Bug report
+description: Something does not work as the README says.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for the report. Hexsight reads the augment cards from your screen, so a saved scan is the best proof of what went wrong.
+
+        **Privacy.** A saved scan can show part of your game screen, including player names. Look at `last-scan.png` before you attach it. Hide names that are not yours. Do not attach `history.json` unless you want to share your games.
+  - type: input
+    id: version
+    attributes:
+      label: Hexsight version
+      description: "The version is in the file name of the exe, for example v0.1.0. The About group in Settings shows it too."
+      placeholder: "v0.1.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: What went wrong?
+      options:
+        - Augment cards not read, or read wrong
+        - Wrong tier or game count
+        - Overlay or window problem
+        - Champion select (bench, trades, builds)
+        - Item sets in the in-game shop
+        - My games
+        - Install, update, or uninstall
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened, and what did you expect?
+      description: "Say what you saw. Say what you thought would happen."
+    validations:
+      required: true
+  - type: textarea
+    id: scan
+    attributes:
+      label: Save the last scan (for card reading problems)
+      description: |
+        Do these steps right after the problem, in the same game:
+        1. While the cards are on screen, press F9 (read the cards now).
+        2. Press F8 to hide the overlay. Then open the Hexsight window and the Settings page (gear icon).
+        3. Open the folded group "Card reading". Press "Save the last scan".
+        4. Open the folder `%LOCALAPPDATA%\Hexsight`. Find `last-scan.png` and `last-scan.txt`.
+        5. Check the PNG for other players' names. Hide them if you can.
+        6. Drag both files into this box. Or paste the text of `last-scan.txt` here.
+      placeholder: "Drag last-scan.png and last-scan.txt here"
+  - type: textarea
+    id: setup
+    attributes:
+      label: Your setup
+      description: "Windows version, League window mode (Borderless, Windowed, or Fullscreen), screen size, client language, one or two monitors."
+      placeholder: "Windows 11, Borderless, 1920x1080, Turkish client, two monitors"
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you send
+      options:
+        - label: League runs in Borderless mode (Fullscreen does not work)
+        - label: I checked that the files I attach show no private data
+          required: true

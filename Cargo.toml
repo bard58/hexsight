@@ -1,0 +1,32 @@
+[package]
+name = "hexsight"
+version = "0.1.0"
+edition = "2024"
+description = "A light Windows helper for League of Legends ARAM Mayhem"
+repository = "https://github.com/bard58/hexsight"
+readme = "README.md"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+base64 = "0.23.1"
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts"] }
+egui = "0.37.0"
+egui_extras = { version = "0.37.0", features = ["image"] }
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
+raw-window-handle = "0.6"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+ureq = { version = "3.5.0", features = ["json"] }
+windows = { version = "0.62.2", features = ["Media_Ocr", "Graphics_Imaging", "Globalization", "Storage_Streams", "Foundation", "Foundation_Collections", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_Foundation", "Win32_System_WinRT", "Win32_System_StationsAndDesktops"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_Graphics_Dwm", "Win32_UI_Controls", "Win32_System_Registry", "Win32_UI_WindowsAndMessaging", "Win32_Security", "Win32_System_ProcessStatus", "Win32_System_Time"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[build-dependencies]
+winresource = "0.1.34"

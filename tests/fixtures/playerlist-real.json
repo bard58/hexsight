@@ -1,0 +1,394 @@
+[
+ {
+  "championName": "Ashe",
+  "isDead": false,
+  "items": [
+   {
+    "consumable": false,
+    "count": 1,
+    "itemID": 3032,
+    "slot": 0
+   },
+   {
+    "consumable": false,
+    "count": 1,
+    "itemID": 3144,
+    "slot": 1
+   },
+   {
+    "consumable": false,
+    "count": 1,
+    "itemID": 1042,
+    "slot": 2
+   },
+   {
+    "consumable": true,
+    "count": 1,
+    "itemID": 220013,
+    "slot": 6
+   }
+  ],
+  "level": 8,
+  "rawChampionName": "game_character_displayname_Ashe",
+  "riotId": "Player1",
+  "scores": {
+   "assists": 8,
+   "creepScore": 10,
+   "deaths": 4,
+   "kills": 2
+  },
+  "summonerName": "Player1",
+  "team": "ORDER"
+ },
+ {
+  "championName": "Player2",
+  "isDead": true,
+  "items": [
+   {
+    "consumable": false,
+    "count": 1,
+    "itemID": 3118,
+    "slot": 0
+   },
+   {
+    "consumable": false,
+    "count": 1,
+    "itemID": 2031,
+    "slot": 1
+   },
+   {
+    "consumable": false,
+    "count": 1,
+    "itemID": 1058,
+    "slot": 2
+   }
+  ],
+  "level": 8,
+  "rawChampionName": "game_character_displayname_Player2",
+  "riotId": "Player2",
+  "scores": {
+   "assists": 10,
+   "creepScore": 0,
+   "deaths": 6,
+   "kills": 3
+  },
+  "summonerName": "Player2",
+  "team": "ORDER"
+ },
+ {
+  "championName": "Akali",
+  "isDead": true,
+  "items": [
+   {
+    "consumable": false,
+    "count": 1,
+    "itemID": 6676,
+    "slot": 0
+   },
+   {
+    "consumable": false,
+    "count": 1,
+    "itemID": 3070,
+    "slot": 1
+   },
+   {
+    "consumable": false,
+    "count": 1,
+    "itemID": 1001,
+    "slot": 4
+   },
+   {
+    "consumable": true,
+    "count": 1,
+    "itemID": 220013,
+    "slot": 6
+   }
+  ],
+  "level": 8,
+  "rawChampionName": "game_character_displayname_Akali",
+  "riotId": "Player3",
+  "scores": {
+   "assists": 9,
+   "creepScore": 10,
+   "deaths": 6,
+   "kills": 2
+  },
+  "summonerName": "Player3",
+  "team": "ORDER"
+ },
+ {
+  "championName": "Rammus",
+  "isDead": false,
+  "items": [
+   {
+    "consumable": false,
+    "count": 1,
+    "itemID": 3118,
+    "slot": 0
+   },
+   {
+    "consumable": false,
+    "count": 1,
+    "itemID": 2031,
+    "slot": 1
+   },
+   {
+    "consumable": false,
+    "count": 1,
+    "itemID": 3020,
+    "slot": 2
+   }
+  ],
+  "level": 7,
+  "rawChampionName": "game_character_displayname_Rammus",
+  "riotId": "Player4",
+  "scores": {
+   "assists": 7,
+   "creepScore": 0,
+   "deaths": 4,
+   "kills": 2
+  },
+  "summonerName": "Player4",
+  "team": "ORDER"
+ },
+ {
+  "championName": "Jinx",
+  "isDead": false,
+  "items": [
+   {
+    "consumable": false,
+    "count": 1,
+    "itemID": 6672,
+    "slot": 0
+   },
+   {
+    "consumable": false,
+    "count": 1,
+    "itemID": 1001,
+    "slot": 1
+   },
+   {
+    "consumable": false,
+    "count": 1,
+    "itemID": 2031,
+    "slot": 2
+   },
+   {
+    "consumable": true,
+    "count": 1,
+    "itemID": 220013,
+    "slot": 6
+   }
+  ],
+  "level": 8,
+  "rawChampionName": "game_character_displayname_Jinx",
+  "riotId": "Player5",
+  "scores": {
+   "assists": 5,
+   "creepScore": 10,
+   "deaths": 2,
+   "kills": 5
+  },
+  "summonerName": "Player5",
+  "team": "ORDER"
+ },
+ {
+  "championName": "Vel'Koz",
+  "isDead": false,
+  "items": [
+   {
+    "consumable": false,
+    "count": 1,
+    "itemID": 2031,
+    "slot": 0
+   },
+   {
+    "consumable": false,
+    "count": 1,
+    "itemID": 3084,
+    "slot": 1
+   },
+   {
+    "consumable": false,
+    "count": 1,
+    "itemID": 3111,
+    "slot": 2
+   }
+  ],
+  "level": 8,
+  "rawChampionName": "game_character_displayname_Velkoz",
+  "riotId": "Player6",
+  "scores": {
+   "assists": 11,
+   "creepScore": 0,
+   "deaths": 4,
+   "kills": 5
+  },
+  "summonerName": "Player6",
+  "team": "CHAOS"
+ },
+ {
+  "championName": "Kai'Sa",
+  "isDead": false,
+  "items": [
+   {
+    "consumable": false,
+    "count": 1,
+    "itemID": 126697,
+    "slot": 0
+   },
+   {
+    "consumable": false,
+    "count": 1,
+    "itemID": 3070,
+    "slot": 1
+   },
+   {
+    "consumable": false,
+    "count": 1,
+    "itemID": 1036,
+    "slot": 2
+   },
+   {
+    "consumable": false,
+    "count": 1,
+    "itemID": 1001,
+    "slot": 3
+   },
+   {
+    "consumable": true,
+    "count": 1,
+    "itemID": 220013,
+    "slot": 6
+   }
+  ],
+  "level": 8,
+  "rawChampionName": "game_character_displayname_Kaisa",
+  "riotId": "Player7",
+  "scores": {
+   "assists": 7,
+   "creepScore": 10,
+   "deaths": 2,
+   "kills": 4
+  },
+  "summonerName": "Player7",
+  "team": "CHAOS"
+ },
+ {
+  "championName": "Amumu",
+  "isDead": false,
+  "items": [
+   {
+    "consumable": false,
+    "count": 1,
+    "itemID": 3084,
+    "slot": 0
+   },
+   {
+    "consumable": false,
+    "count": 1,
+    "itemID": 1057,
+    "slot": 1
+   },
+   {
+    "consumable": false,
+    "count": 1,
+    "itemID": 1028,
+    "slot": 2
+   },
+   {
+    "consumable": true,
+    "count": 1,
+    "itemID": 220013,
+    "slot": 6
+   }
+  ],
+  "level": 8,
+  "rawChampionName": "game_character_displayname_Amumu",
+  "riotId": "Player8",
+  "scores": {
+   "assists": 14,
+   "creepScore": 0,
+   "deaths": 2,
+   "kills": 2
+  },
+  "summonerName": "Player8",
+  "team": "CHAOS"
+ },
+ {
+  "championName": "Nautilus",
+  "isDead": false,
+  "items": [
+   {
+    "consumable": false,
+    "count": 1,
+    "itemID": 3084,
+    "slot": 0
+   },
+   {
+    "consumable": false,
+    "count": 1,
+    "itemID": 3070,
+    "slot": 1
+   },
+   {
+    "consumable": false,
+    "count": 1,
+    "itemID": 3067,
+    "slot": 2
+   }
+  ],
+  "level": 8,
+  "rawChampionName": "game_character_displayname_Nautilus",
+  "riotId": "Player9",
+  "scores": {
+   "assists": 13,
+   "creepScore": 0,
+   "deaths": 3,
+   "kills": 2
+  },
+  "summonerName": "Player9",
+  "team": "CHAOS"
+ },
+ {
+  "championName": "Caitlyn",
+  "isDead": false,
+  "items": [
+   {
+    "consumable": false,
+    "count": 1,
+    "itemID": 3508,
+    "slot": 0
+   },
+   {
+    "consumable": false,
+    "count": 1,
+    "itemID": 3070,
+    "slot": 1
+   },
+   {
+    "consumable": false,
+    "count": 1,
+    "itemID": 3044,
+    "slot": 2
+   },
+   {
+    "consumable": false,
+    "count": 1,
+    "itemID": 1042,
+    "slot": 4
+   }
+  ],
+  "level": 8,
+  "rawChampionName": "game_character_displayname_Caitlyn",
+  "riotId": "Player10",
+  "scores": {
+   "assists": 10,
+   "creepScore": 0,
+   "deaths": 2,
+   "kills": 6
+  },
+  "summonerName": "Player10",
+  "team": "CHAOS"
+ }
+]

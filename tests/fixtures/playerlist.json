@@ -1,0 +1,838 @@
+[
+ {
+  "championName": "Ahri",
+  "isBot": false,
+  "isDead": false,
+  "items": [
+   {
+    "canUse": false,
+    "consumable": false,
+    "count": 1,
+    "displayName": "Luden's Echo",
+    "itemID": 6655,
+    "price": 450,
+    "rawDescription": "GeneratedTip_Item_6655_Description",
+    "rawDisplayName": "Item_LudensEcho_Name",
+    "slot": 0
+   },
+   {
+    "canUse": false,
+    "consumable": false,
+    "count": 1,
+    "displayName": "Sorcerer's Shoes",
+    "itemID": 3020,
+    "price": 800,
+    "rawDescription": "GeneratedTip_Item_3020_Description",
+    "rawDisplayName": "Item_SorcerersShoes_Name",
+    "slot": 1
+   },
+   {
+    "canUse": false,
+    "consumable": true,
+    "count": 2,
+    "displayName": "Health Potion",
+    "itemID": 2003,
+    "price": 50,
+    "rawDescription": "GeneratedTip_Item_2003_Description",
+    "rawDisplayName": "Item_HealthPotion_Name",
+    "slot": 2
+   },
+   {
+    "canUse": false,
+    "consumable": false,
+    "count": 1,
+    "displayName": "Stealth Ward",
+    "itemID": 3340,
+    "price": 0,
+    "rawDescription": "GeneratedTip_Item_3340_Description",
+    "rawDisplayName": "Item_StealthWard_Name",
+    "slot": 6
+   }
+  ],
+  "level": 9,
+  "position": "",
+  "rawChampionName": "game_character_displayname_Ahri",
+  "rawSkinName": "game_character_skin_displayname_Ahri_0",
+  "respawnTimer": 0,
+  "riotId": "Player1",
+  "riotIdGameName": "Player1",
+  "riotIdTagLine": "EUW",
+  "runes": {
+   "keystone": {
+    "displayName": "Electrocute",
+    "id": 8112,
+    "rawDescription": "perk_x",
+    "rawDisplayName": "perk_y"
+   },
+   "primaryRuneTree": {
+    "displayName": "Domination",
+    "id": 8100,
+    "rawDescription": "perk_z",
+    "rawDisplayName": "perk_w"
+   },
+   "secondaryRuneTree": {
+    "displayName": "Sorcery",
+    "id": 8200,
+    "rawDescription": "perk_v",
+    "rawDisplayName": "perk_u"
+   }
+  },
+  "scores": {
+   "assists": 5,
+   "creepScore": 20,
+   "deaths": 1,
+   "kills": 3,
+   "wardScore": 0
+  },
+  "skinID": 0,
+  "summonerName": "Player1",
+  "summonerSpells": {
+   "summonerSpellOne": {
+    "displayName": "Flash",
+    "rawDescription": "GeneratedTip_SummonerSpell_x_Description",
+    "rawDisplayName": "GeneratedTip_SummonerSpell_x_DisplayName"
+   },
+   "summonerSpellTwo": {
+    "displayName": "Ghost",
+    "rawDescription": "GeneratedTip_SummonerSpell_y_Description",
+    "rawDisplayName": "GeneratedTip_SummonerSpell_y_DisplayName"
+   }
+  },
+  "team": "ORDER"
+ },
+ {
+  "championName": "Jinx",
+  "isBot": false,
+  "isDead": false,
+  "items": [
+   {
+    "canUse": false,
+    "consumable": false,
+    "count": 1,
+    "displayName": "Infinity Edge",
+    "itemID": 3031,
+    "price": 725,
+    "rawDescription": "GeneratedTip_Item_3031_Description",
+    "rawDisplayName": "Item_InfinityEdge_Name",
+    "slot": 0
+   },
+   {
+    "canUse": false,
+    "consumable": false,
+    "count": 1,
+    "displayName": "B. F. Sword",
+    "itemID": 1038,
+    "price": 1300,
+    "rawDescription": "GeneratedTip_Item_1038_Description",
+    "rawDisplayName": "Item_BFSword_Name",
+    "slot": 1
+   },
+   {
+    "canUse": false,
+    "consumable": false,
+    "count": 1,
+    "displayName": "Stealth Ward",
+    "itemID": 3340,
+    "price": 0,
+    "rawDescription": "GeneratedTip_Item_3340_Description",
+    "rawDisplayName": "Item_StealthWard_Name",
+    "slot": 6
+   }
+  ],
+  "level": 8,
+  "position": "",
+  "rawChampionName": "game_character_displayname_Jinx",
+  "rawSkinName": "game_character_skin_displayname_Jinx_0",
+  "respawnTimer": 0,
+  "riotId": "Player2",
+  "riotIdGameName": "Player2",
+  "riotIdTagLine": "EUW",
+  "runes": {
+   "keystone": {
+    "displayName": "Electrocute",
+    "id": 8112,
+    "rawDescription": "perk_x",
+    "rawDisplayName": "perk_y"
+   },
+   "primaryRuneTree": {
+    "displayName": "Domination",
+    "id": 8100,
+    "rawDescription": "perk_z",
+    "rawDisplayName": "perk_w"
+   },
+   "secondaryRuneTree": {
+    "displayName": "Sorcery",
+    "id": 8200,
+    "rawDescription": "perk_v",
+    "rawDisplayName": "perk_u"
+   }
+  },
+  "scores": {
+   "assists": 4,
+   "creepScore": 15,
+   "deaths": 3,
+   "kills": 2,
+   "wardScore": 0
+  },
+  "skinID": 0,
+  "summonerName": "Player2",
+  "summonerSpells": {
+   "summonerSpellOne": {
+    "displayName": "Flash",
+    "rawDescription": "GeneratedTip_SummonerSpell_x_Description",
+    "rawDisplayName": "GeneratedTip_SummonerSpell_x_DisplayName"
+   },
+   "summonerSpellTwo": {
+    "displayName": "Ghost",
+    "rawDescription": "GeneratedTip_SummonerSpell_y_Description",
+    "rawDisplayName": "GeneratedTip_SummonerSpell_y_DisplayName"
+   }
+  },
+  "team": "ORDER"
+ },
+ {
+  "championName": "Heimerdinger",
+  "isBot": false,
+  "isDead": false,
+  "items": [
+   {
+    "canUse": false,
+    "consumable": false,
+    "count": 1,
+    "displayName": "Lost Chapter",
+    "itemID": 3802,
+    "price": 250,
+    "rawDescription": "GeneratedTip_Item_3802_Description",
+    "rawDisplayName": "Item_LostChapter_Name",
+    "slot": 0
+   },
+   {
+    "canUse": false,
+    "consumable": false,
+    "count": 1,
+    "displayName": "Needlessly Large Rod",
+    "itemID": 1058,
+    "price": 1200,
+    "rawDescription": "GeneratedTip_Item_1058_Description",
+    "rawDisplayName": "Item_NeedlesslyLargeRod_Name",
+    "slot": 1
+   },
+   {
+    "canUse": false,
+    "consumable": true,
+    "count": 1,
+    "displayName": "Health Potion",
+    "itemID": 2003,
+    "price": 50,
+    "rawDescription": "GeneratedTip_Item_2003_Description",
+    "rawDisplayName": "Item_HealthPotion_Name",
+    "slot": 2
+   },
+   {
+    "canUse": false,
+    "consumable": false,
+    "count": 1,
+    "displayName": "Stealth Ward",
+    "itemID": 3340,
+    "price": 0,
+    "rawDescription": "GeneratedTip_Item_3340_Description",
+    "rawDisplayName": "Item_StealthWard_Name",
+    "slot": 6
+   }
+  ],
+  "level": 9,
+  "position": "",
+  "rawChampionName": "game_character_displayname_Heimerdinger",
+  "rawSkinName": "game_character_skin_displayname_Heimerdinger_0",
+  "respawnTimer": 0,
+  "riotId": "Player3",
+  "riotIdGameName": "Player3",
+  "riotIdTagLine": "EUW",
+  "runes": {
+   "keystone": {
+    "displayName": "Electrocute",
+    "id": 8112,
+    "rawDescription": "perk_x",
+    "rawDisplayName": "perk_y"
+   },
+   "primaryRuneTree": {
+    "displayName": "Domination",
+    "id": 8100,
+    "rawDescription": "perk_z",
+    "rawDisplayName": "perk_w"
+   },
+   "secondaryRuneTree": {
+    "displayName": "Sorcery",
+    "id": 8200,
+    "rawDescription": "perk_v",
+    "rawDisplayName": "perk_u"
+   }
+  },
+  "scores": {
+   "assists": 7,
+   "creepScore": 12,
+   "deaths": 2,
+   "kills": 1,
+   "wardScore": 0
+  },
+  "skinID": 0,
+  "summonerName": "Player3",
+  "summonerSpells": {
+   "summonerSpellOne": {
+    "displayName": "Flash",
+    "rawDescription": "GeneratedTip_SummonerSpell_x_Description",
+    "rawDisplayName": "GeneratedTip_SummonerSpell_x_DisplayName"
+   },
+   "summonerSpellTwo": {
+    "displayName": "Ghost",
+    "rawDescription": "GeneratedTip_SummonerSpell_y_Description",
+    "rawDisplayName": "GeneratedTip_SummonerSpell_y_DisplayName"
+   }
+  },
+  "team": "ORDER"
+ },
+ {
+  "championName": "Garen",
+  "isBot": false,
+  "isDead": false,
+  "items": [
+   {
+    "canUse": false,
+    "consumable": false,
+    "count": 1,
+    "displayName": "Thornmail",
+    "itemID": 3075,
+    "price": 450,
+    "rawDescription": "GeneratedTip_Item_3075_Description",
+    "rawDisplayName": "Item_Thornmail_Name",
+    "slot": 0
+   },
+   {
+    "canUse": false,
+    "consumable": false,
+    "count": 1,
+    "displayName": "Mercury's Treads",
+    "itemID": 3111,
+    "price": 550,
+    "rawDescription": "GeneratedTip_Item_3111_Description",
+    "rawDisplayName": "Item_MercurysTreads_Name",
+    "slot": 1
+   },
+   {
+    "canUse": false,
+    "consumable": false,
+    "count": 1,
+    "displayName": "Stealth Ward",
+    "itemID": 3340,
+    "price": 0,
+    "rawDescription": "GeneratedTip_Item_3340_Description",
+    "rawDisplayName": "Item_StealthWard_Name",
+    "slot": 6
+   }
+  ],
+  "level": 8,
+  "position": "",
+  "rawChampionName": "game_character_displayname_Garen",
+  "rawSkinName": "game_character_skin_displayname_Garen_0",
+  "respawnTimer": 0,
+  "riotId": "Player4",
+  "riotIdGameName": "Player4",
+  "riotIdTagLine": "EUW",
+  "runes": {
+   "keystone": {
+    "displayName": "Electrocute",
+    "id": 8112,
+    "rawDescription": "perk_x",
+    "rawDisplayName": "perk_y"
+   },
+   "primaryRuneTree": {
+    "displayName": "Domination",
+    "id": 8100,
+    "rawDescription": "perk_z",
+    "rawDisplayName": "perk_w"
+   },
+   "secondaryRuneTree": {
+    "displayName": "Sorcery",
+    "id": 8200,
+    "rawDescription": "perk_v",
+    "rawDisplayName": "perk_u"
+   }
+  },
+  "scores": {
+   "assists": 3,
+   "creepScore": 30,
+   "deaths": 4,
+   "kills": 4,
+   "wardScore": 0
+  },
+  "skinID": 0,
+  "summonerName": "Player4",
+  "summonerSpells": {
+   "summonerSpellOne": {
+    "displayName": "Flash",
+    "rawDescription": "GeneratedTip_SummonerSpell_x_Description",
+    "rawDisplayName": "GeneratedTip_SummonerSpell_x_DisplayName"
+   },
+   "summonerSpellTwo": {
+    "displayName": "Ghost",
+    "rawDescription": "GeneratedTip_SummonerSpell_y_Description",
+    "rawDisplayName": "GeneratedTip_SummonerSpell_y_DisplayName"
+   }
+  },
+  "team": "ORDER"
+ },
+ {
+  "championName": "Soraka",
+  "isBot": false,
+  "isDead": true,
+  "items": [
+   {
+    "canUse": false,
+    "consumable": false,
+    "count": 1,
+    "displayName": "Stealth Ward",
+    "itemID": 3340,
+    "price": 0,
+    "rawDescription": "GeneratedTip_Item_3340_Description",
+    "rawDisplayName": "Item_StealthWard_Name",
+    "slot": 6
+   }
+  ],
+  "level": 8,
+  "position": "",
+  "rawChampionName": "game_character_displayname_Soraka",
+  "rawSkinName": "game_character_skin_displayname_Soraka_0",
+  "respawnTimer": 12.5,
+  "riotId": "Player5",
+  "riotIdGameName": "Player5",
+  "riotIdTagLine": "EUW",
+  "runes": {
+   "keystone": {
+    "displayName": "Electrocute",
+    "id": 8112,
+    "rawDescription": "perk_x",
+    "rawDisplayName": "perk_y"
+   },
+   "primaryRuneTree": {
+    "displayName": "Domination",
+    "id": 8100,
+    "rawDescription": "perk_z",
+    "rawDisplayName": "perk_w"
+   },
+   "secondaryRuneTree": {
+    "displayName": "Sorcery",
+    "id": 8200,
+    "rawDescription": "perk_v",
+    "rawDisplayName": "perk_u"
+   }
+  },
+  "scores": {
+   "assists": 12,
+   "creepScore": 5,
+   "deaths": 5,
+   "kills": 0,
+   "wardScore": 0
+  },
+  "skinID": 0,
+  "summonerName": "Player5",
+  "summonerSpells": {
+   "summonerSpellOne": {
+    "displayName": "Flash",
+    "rawDescription": "GeneratedTip_SummonerSpell_x_Description",
+    "rawDisplayName": "GeneratedTip_SummonerSpell_x_DisplayName"
+   },
+   "summonerSpellTwo": {
+    "displayName": "Ghost",
+    "rawDescription": "GeneratedTip_SummonerSpell_y_Description",
+    "rawDisplayName": "GeneratedTip_SummonerSpell_y_DisplayName"
+   }
+  },
+  "team": "ORDER"
+ },
+ {
+  "championName": "Zed",
+  "isBot": false,
+  "isDead": false,
+  "items": [
+   {
+    "canUse": false,
+    "consumable": false,
+    "count": 1,
+    "displayName": "Black Cleaver",
+    "itemID": 3071,
+    "price": 225,
+    "rawDescription": "GeneratedTip_Item_3071_Description",
+    "rawDisplayName": "Item_BlackCleaver_Name",
+    "slot": 0
+   },
+   {
+    "canUse": false,
+    "consumable": false,
+    "count": 1,
+    "displayName": "Infinity Edge",
+    "itemID": 3031,
+    "price": 725,
+    "rawDescription": "GeneratedTip_Item_3031_Description",
+    "rawDisplayName": "Item_InfinityEdge_Name",
+    "slot": 1
+   },
+   {
+    "canUse": false,
+    "consumable": false,
+    "count": 1,
+    "displayName": "Youmuu's Ghostblade",
+    "itemID": 3142,
+    "price": 675,
+    "rawDescription": "GeneratedTip_Item_3142_Description",
+    "rawDisplayName": "Item_YoumuusGhostblade_Name",
+    "slot": 2
+   },
+   {
+    "canUse": false,
+    "consumable": false,
+    "count": 1,
+    "displayName": "Stealth Ward",
+    "itemID": 3340,
+    "price": 0,
+    "rawDescription": "GeneratedTip_Item_3340_Description",
+    "rawDisplayName": "Item_StealthWard_Name",
+    "slot": 6
+   }
+  ],
+  "level": 10,
+  "position": "",
+  "rawChampionName": "game_character_displayname_Zed",
+  "rawSkinName": "game_character_skin_displayname_Zed_0",
+  "respawnTimer": 0,
+  "riotId": "Player6",
+  "riotIdGameName": "Player6",
+  "riotIdTagLine": "EUW",
+  "runes": {
+   "keystone": {
+    "displayName": "Electrocute",
+    "id": 8112,
+    "rawDescription": "perk_x",
+    "rawDisplayName": "perk_y"
+   },
+   "primaryRuneTree": {
+    "displayName": "Domination",
+    "id": 8100,
+    "rawDescription": "perk_z",
+    "rawDisplayName": "perk_w"
+   },
+   "secondaryRuneTree": {
+    "displayName": "Sorcery",
+    "id": 8200,
+    "rawDescription": "perk_v",
+    "rawDisplayName": "perk_u"
+   }
+  },
+  "scores": {
+   "assists": 4,
+   "creepScore": 40,
+   "deaths": 2,
+   "kills": 9,
+   "wardScore": 0
+  },
+  "skinID": 0,
+  "summonerName": "Player6",
+  "summonerSpells": {
+   "summonerSpellOne": {
+    "displayName": "Flash",
+    "rawDescription": "GeneratedTip_SummonerSpell_x_Description",
+    "rawDisplayName": "GeneratedTip_SummonerSpell_x_DisplayName"
+   },
+   "summonerSpellTwo": {
+    "displayName": "Ghost",
+    "rawDescription": "GeneratedTip_SummonerSpell_y_Description",
+    "rawDisplayName": "GeneratedTip_SummonerSpell_y_DisplayName"
+   }
+  },
+  "team": "CHAOS"
+ },
+ {
+  "championName": "Malphite",
+  "isBot": false,
+  "isDead": false,
+  "level": 8,
+  "position": "",
+  "rawChampionName": "game_character_displayname_Malphite",
+  "rawSkinName": "game_character_skin_displayname_Malphite_0",
+  "respawnTimer": 0,
+  "riotId": "Player7",
+  "riotIdGameName": "Player7",
+  "riotIdTagLine": "EUW",
+  "runes": {
+   "keystone": {
+    "displayName": "Electrocute",
+    "id": 8112,
+    "rawDescription": "perk_x",
+    "rawDisplayName": "perk_y"
+   },
+   "primaryRuneTree": {
+    "displayName": "Domination",
+    "id": 8100,
+    "rawDescription": "perk_z",
+    "rawDisplayName": "perk_w"
+   },
+   "secondaryRuneTree": {
+    "displayName": "Sorcery",
+    "id": 8200,
+    "rawDescription": "perk_v",
+    "rawDisplayName": "perk_u"
+   }
+  },
+  "skinID": 0,
+  "summonerName": "Player7",
+  "summonerSpells": {
+   "summonerSpellOne": {
+    "displayName": "Flash",
+    "rawDescription": "GeneratedTip_SummonerSpell_x_Description",
+    "rawDisplayName": "GeneratedTip_SummonerSpell_x_DisplayName"
+   },
+   "summonerSpellTwo": {
+    "displayName": "Ghost",
+    "rawDescription": "GeneratedTip_SummonerSpell_y_Description",
+    "rawDisplayName": "GeneratedTip_SummonerSpell_y_DisplayName"
+   }
+  },
+  "team": "CHAOS"
+ },
+ {
+  "championName": "Yuumi",
+  "isBot": false,
+  "isDead": false,
+  "items": [
+   {
+    "canUse": false,
+    "consumable": false,
+    "count": 1,
+    "displayName": "Stealth Ward",
+    "itemID": 3340,
+    "price": 0,
+    "rawDescription": "GeneratedTip_Item_3340_Description",
+    "rawDisplayName": "Item_StealthWard_Name",
+    "slot": 6
+   }
+  ],
+  "level": 7,
+  "position": "",
+  "rawChampionName": "game_character_displayname_Yuumi",
+  "rawSkinName": "game_character_skin_displayname_Yuumi_0",
+  "respawnTimer": 0,
+  "riotId": "Player8",
+  "riotIdGameName": "Player8",
+  "riotIdTagLine": "EUW",
+  "runes": {
+   "keystone": {
+    "displayName": "Electrocute",
+    "id": 8112,
+    "rawDescription": "perk_x",
+    "rawDisplayName": "perk_y"
+   },
+   "primaryRuneTree": {
+    "displayName": "Domination",
+    "id": 8100,
+    "rawDescription": "perk_z",
+    "rawDisplayName": "perk_w"
+   },
+   "secondaryRuneTree": {
+    "displayName": "Sorcery",
+    "id": 8200,
+    "rawDescription": "perk_v",
+    "rawDisplayName": "perk_u"
+   }
+  },
+  "scores": {
+   "assists": 9,
+   "creepScore": 3,
+   "deaths": 6,
+   "kills": 1,
+   "wardScore": 0
+  },
+  "skinID": 0,
+  "summonerName": "Player8",
+  "summonerSpells": {
+   "summonerSpellOne": {
+    "displayName": "Flash",
+    "rawDescription": "GeneratedTip_SummonerSpell_x_Description",
+    "rawDisplayName": "GeneratedTip_SummonerSpell_x_DisplayName"
+   },
+   "summonerSpellTwo": {
+    "displayName": "Ghost",
+    "rawDescription": "GeneratedTip_SummonerSpell_y_Description",
+    "rawDisplayName": "GeneratedTip_SummonerSpell_y_DisplayName"
+   }
+  },
+  "team": "CHAOS"
+ },
+ {
+  "championName": "Lux",
+  "isBot": false,
+  "isDead": false,
+  "items": [
+   {
+    "canUse": false,
+    "consumable": false,
+    "count": 1,
+    "displayName": "Luden's Echo",
+    "itemID": 6655,
+    "price": 450,
+    "rawDescription": "GeneratedTip_Item_6655_Description",
+    "rawDisplayName": "Item_LudensEcho_Name",
+    "slot": 0
+   },
+   {
+    "canUse": false,
+    "consumable": false,
+    "count": 1,
+    "displayName": "Sorcerer's Shoes",
+    "itemID": 3020,
+    "price": 800,
+    "rawDescription": "GeneratedTip_Item_3020_Description",
+    "rawDisplayName": "Item_SorcerersShoes_Name",
+    "slot": 1
+   },
+   {
+    "canUse": false,
+    "consumable": false,
+    "count": 1,
+    "displayName": "Stealth Ward",
+    "itemID": 3340,
+    "price": 0,
+    "rawDescription": "GeneratedTip_Item_3340_Description",
+    "rawDisplayName": "Item_StealthWard_Name",
+    "slot": 6
+   }
+  ],
+  "level": 9,
+  "position": "",
+  "rawChampionName": "game_character_displayname_Lux",
+  "rawSkinName": "game_character_skin_displayname_Lux_0",
+  "respawnTimer": 0,
+  "riotId": "Player9",
+  "riotIdGameName": "Player9",
+  "riotIdTagLine": "EUW",
+  "runes": {
+   "keystone": {
+    "displayName": "Electrocute",
+    "id": 8112,
+    "rawDescription": "perk_x",
+    "rawDisplayName": "perk_y"
+   },
+   "primaryRuneTree": {
+    "displayName": "Domination",
+    "id": 8100,
+    "rawDescription": "perk_z",
+    "rawDisplayName": "perk_w"
+   },
+   "secondaryRuneTree": {
+    "displayName": "Sorcery",
+    "id": 8200,
+    "rawDescription": "perk_v",
+    "rawDisplayName": "perk_u"
+   }
+  },
+  "scores": {
+   "assists": 6,
+   "creepScore": 18,
+   "deaths": 3,
+   "kills": 2,
+   "wardScore": 0
+  },
+  "skinID": 0,
+  "summonerName": "Player9",
+  "summonerSpells": {
+   "summonerSpellOne": {
+    "displayName": "Flash",
+    "rawDescription": "GeneratedTip_SummonerSpell_x_Description",
+    "rawDisplayName": "GeneratedTip_SummonerSpell_x_DisplayName"
+   },
+   "summonerSpellTwo": {
+    "displayName": "Ghost",
+    "rawDescription": "GeneratedTip_SummonerSpell_y_Description",
+    "rawDisplayName": "GeneratedTip_SummonerSpell_y_DisplayName"
+   }
+  },
+  "team": "CHAOS"
+ },
+ {
+  "championName": "Nasus",
+  "isBot": false,
+  "isDead": false,
+  "items": [
+   {
+    "canUse": false,
+    "consumable": false,
+    "count": 1,
+    "displayName": "Ravenous Hydra",
+    "itemID": 3074,
+    "price": 150,
+    "rawDescription": "GeneratedTip_Item_3074_Description",
+    "rawDisplayName": "Item_RavenousHydra_Name",
+    "slot": 0
+   },
+   {
+    "canUse": false,
+    "consumable": false,
+    "count": 1,
+    "displayName": "Stealth Ward",
+    "itemID": 3340,
+    "price": 0,
+    "rawDescription": "GeneratedTip_Item_3340_Description",
+    "rawDisplayName": "Item_StealthWard_Name",
+    "slot": 6
+   }
+  ],
+  "level": 8,
+  "position": "",
+  "rawChampionName": "game_character_displayname_Nasus",
+  "rawSkinName": "game_character_skin_displayname_Nasus_0",
+  "respawnTimer": 0,
+  "riotId": "Player10",
+  "riotIdGameName": "Player10",
+  "riotIdTagLine": "EUW",
+  "runes": {
+   "keystone": {
+    "displayName": "Electrocute",
+    "id": 8112,
+    "rawDescription": "perk_x",
+    "rawDisplayName": "perk_y"
+   },
+   "primaryRuneTree": {
+    "displayName": "Domination",
+    "id": 8100,
+    "rawDescription": "perk_z",
+    "rawDisplayName": "perk_w"
+   },
+   "secondaryRuneTree": {
+    "displayName": "Sorcery",
+    "id": 8200,
+    "rawDescription": "perk_v",
+    "rawDisplayName": "perk_u"
+   }
+  },
+  "scores": {
+   "assists": 2,
+   "creepScore": 35,
+   "deaths": 5,
+   "kills": 3,
+   "wardScore": 0
+  },
+  "skinID": 0,
+  "summonerName": "Player10",
+  "summonerSpells": {
+   "summonerSpellOne": {
+    "displayName": "Flash",
+    "rawDescription": "GeneratedTip_SummonerSpell_x_Description",
+    "rawDisplayName": "GeneratedTip_SummonerSpell_x_DisplayName"
+   },
+   "summonerSpellTwo": {
+    "displayName": "Ghost",
+    "rawDescription": "GeneratedTip_SummonerSpell_y_Description",
+    "rawDisplayName": "GeneratedTip_SummonerSpell_y_DisplayName"
+   }
+  },
+  "team": "CHAOS"
+ }
+]
