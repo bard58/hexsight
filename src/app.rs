@@ -1485,7 +1485,7 @@ fn read_rows(r: &ReadView, lang: Lang) -> Vec<(&'static str, String, bool)> {
         ),
         (
             lang.t(Key::ReadLastScan),
-            r.scan_age.map_or_else(&no_scan, |s| age_text(lang, s)),
+            r.scan_age.map_or_else(no_scan, |s| age_text(lang, s)),
             false,
         ),
         (lang.t(Key::ReadLines), scanned(lines), r.engine_failed),

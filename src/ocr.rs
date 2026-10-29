@@ -340,7 +340,9 @@ pub fn band_signature(bgra: &[u8], w: u32, h: u32) -> Option<u64> {
             // Every second pixel of every second row is enough.
             for y in (y0..y1).step_by(2) {
                 for px in bgra[(y * w + x0) * 4..(y * w + x1) * 4]
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .step_by(2)
                 {
                     sum += px[0] as u32 + px[1] as u32 + px[2] as u32;
@@ -700,7 +702,9 @@ pub fn save_scan(dir: &Path, rec: &ScanRecord, text: &str) -> Result<(), String>
         Some(s) => {
             let rgb: Vec<u8> = s
                 .bgra
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .flat_map(|p| [p[2], p[1], p[0]])
                 .collect();
             let img = image::RgbImage::from_raw(s.crop.w as u32, s.crop.h as u32, rgb)
@@ -990,7 +994,7 @@ fn same_row(cols: Vec<(Card, f32)>) -> Vec<(Card, f32)> {
 /// 8th pixel, so a 4 MB capture costs a few microseconds.
 pub fn mean_brightness(bgra: &[u8]) -> f32 {
     let (mut sum, mut n) = (0u64, 0u64);
-    for px in bgra.chunks_exact(4).step_by(8) {
+    for px in bgra.as_chunks::<4>().0.iter().step_by(8) {
         sum += px[0] as u64 + px[1] as u64 + px[2] as u64;
         n += 3;
     }
