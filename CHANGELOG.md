@@ -4,6 +4,12 @@ All notable changes to this project are in this file. The format follows [Keep a
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-31
+
+### Fixed
+
+- The item tips no longer suggest an item that you already upgraded in the game. For example, Muramana now also counts as Manamune and Tear of the Goddess. The same applies to Seraph's Embrace and Fimbulwinter.
+
 ## [0.1.0] - 2026-10-29
 
 First public release.

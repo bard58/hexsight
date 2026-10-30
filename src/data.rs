@@ -151,6 +151,7 @@ pub fn parse_items(v: &Value) -> (HashMap<i64, Item>, HashMap<i64, ItemInfo>) {
             ItemInfo {
                 total: u(&x["priceTotal"]),
                 from: arr(&x["from"]).filter_map(|c| c.as_i64()).collect(),
+                upgrade_of: x["specialRecipe"].as_i64().filter(|&id| id > 0),
                 cats: words.iter().fold(0, |acc, w| acc | cat::bit(w)),
                 tags: words.len().min(255) as u8,
                 in_store: x["inStore"].as_bool().unwrap_or(false),
@@ -1236,6 +1237,19 @@ mod tests {
                 && hex.aug_links.is_empty()
                 && hex.magic_share.is_none()
         );
+    }
+
+    #[test]
+    fn the_item_list_keeps_the_upgrade_link() {
+        let list = serde_json::json!([
+            {"id": 3042, "name": "Muramana", "from": [], "specialRecipe": 3004},
+            {"id": 3004, "name": "Manamune", "from": [3070], "specialRecipe": 0},
+            {"id": 3070, "name": "Tear of the Goddess"},
+        ]);
+        let (_, info) = parse_items(&list);
+        assert_eq!(info[&3042].upgrade_of, Some(3004));
+        assert_eq!(info[&3004].upgrade_of, None);
+        assert_eq!(info[&3070].upgrade_of, None);
     }
 
     #[test]

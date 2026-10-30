@@ -479,13 +479,33 @@ pub struct Input<'a> {
     pub known: &'a [i64],
 }
 
-/// All parts of an item, the parts of the parts and so on (`RECIPE_DEPTH` levels).
+/// Your items and the items that they were before an upgrade in the game: Muramana counts as Manamune too.
+fn with_earlier_forms(sd: &StaticData, owned: &[i64]) -> Vec<i64> {
+    let mut out = owned.to_vec();
+    for &id in owned {
+        let mut at = id;
+        for _ in 0..RECIPE_DEPTH {
+            let Some(earlier) = sd.item_info.get(&at).and_then(|i| i.upgrade_of) else {
+                break;
+            };
+            out.push(earlier);
+            at = earlier;
+        }
+    }
+    out
+}
+
+/// All parts of an item, the parts of the parts and so on (`RECIPE_DEPTH` levels). The item that
+/// turns into this one counts as a part, so Muramana also holds Manamune and its Tear of the Goddess.
 fn recipe_tree(sd: &StaticData, id: i64) -> Vec<i64> {
     fn walk(sd: &StaticData, id: i64, depth: u8, out: &mut Vec<i64>) {
         if depth == 0 {
             return;
         }
-        for &part in sd.item_info.get(&id).map_or(&[][..], |i| &i.from[..]) {
+        let Some(info) = sd.item_info.get(&id) else {
+            return;
+        };
+        for &part in info.from.iter().chain(&info.upgrade_of) {
             if !out.contains(&part) {
                 out.push(part);
             }
@@ -645,7 +665,7 @@ fn rank(input: &Input) -> Ranking {
         .count();
     let free_slots = 6usize.saturating_sub(owned.len());
     let owns_boots = owned.iter().any(|&id| cats(id) & cat::BOOTS != 0);
-    let build_at = pick_build(builds, owned);
+    let build_at = pick_build(builds, &with_earlier_forms(sd, owned));
     let build = &builds[build_at];
     let class = class_of(details);
     let rules = Rules::of(input.ctx);
@@ -912,12 +932,13 @@ pub fn advise(input: &Input) -> Advice {
         })
         .collect();
     out.slots_full = ranking.no_slot && out.items.is_empty() && owned.len() >= 6;
+    let held = with_earlier_forms(input.sd, owned);
     let mut wanted: Vec<i64> = out
         .items
         .iter()
         .map(|p| p.id)
         .chain(build.items.iter().chain(&build.later).copied())
-        .filter(|id| !owned.contains(id))
+        .filter(|id| !held.contains(id))
         .collect();
     wanted.sort_unstable();
     wanted.dedup();
@@ -1565,6 +1586,37 @@ mod tests {
         unsold.item_info.remove(&3102);
         let a = advise(&input_of(&[], &d, &unsold));
         assert_eq!(ids(&a), vec![3089, 3802]);
+    }
+
+    #[test]
+    fn an_upgraded_item_drops_its_first_form_and_the_parts() {
+        let mut sd = sd();
+        // The real data: Muramana (3042) has no `from`, only `specialRecipe` = Manamune (3004).
+        let item = |total, from: &[i64], upgrade_of, in_store| crate::model::ItemInfo {
+            total,
+            from: from.to_vec(),
+            upgrade_of,
+            cats: 0,
+            tags: 1,
+            in_store,
+        };
+        sd.item_info.insert(3070, item(400, &[], None, true));
+        sd.item_info.insert(3004, item(2900, &[3070], None, true));
+        sd.item_info
+            .insert(3042, item(2900, &[], Some(3004), false));
+        let d = with_build("ap", &[3004], &[3070, 3089]);
+        let a = advise(&input_of(&[3042], &d, &sd));
+        assert_eq!(ids(&a), vec![3089]);
+        assert!(!a.wanted.contains(&3004) && !a.wanted.contains(&3042));
+        // Before the upgrade the list is the same, and with no item Manamune is still on it.
+        assert_eq!(ids(&advise(&input_of(&[3004], &d, &sd))), vec![3089]);
+        assert!(ids(&advise(&input_of(&[], &d, &sd))).contains(&3004));
+        // The upgraded item counts for the build that lists its first form.
+        let builds = [
+            with_build("ap", &[3089], &[]).builds.remove(0),
+            with_build("ad", &[3004], &[]).builds.remove(0),
+        ];
+        assert_eq!(pick_build(&builds, &with_earlier_forms(&sd, &[3042])), 1);
     }
 
     #[test]

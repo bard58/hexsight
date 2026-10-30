@@ -89,6 +89,8 @@ pub struct ItemInfo {
     pub total: u32,
     /// The components, one id for each part (`from`).
     pub from: Vec<i64>,
+    /// The item that turns into this one in a game (`specialRecipe`): Manamune for Muramana.
+    pub upgrade_of: Option<i64>,
     /// The tags (`categories`) as bits of `cat`.
     pub cats: u16,
     /// How many tags the item has in the data. An item with many tags (the Golden

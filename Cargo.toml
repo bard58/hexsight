@@ -1,6 +1,6 @@
 [package]
 name = "hexsight"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "A light Windows helper for League of Legends ARAM Mayhem"
 repository = "https://github.com/bard58/hexsight"
