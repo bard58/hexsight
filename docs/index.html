@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hexsight: light ARAM Mayhem helper for Windows</title>
+<meta name="description" content="A free, open-source Windows helper for ARAM Mayhem. One exe of about 6 MB. Tier and game count for each augment. No ads, no account.">
+<meta property="og:title" content="Hexsight: light ARAM Mayhem helper">
+<meta property="og:description" content="Three augment cards. Their tiers and game counts. Your call.">
+<meta property="og:image" content="https://bard58.github.io/hexsight/promo/ingame-pick-en.png">
+<link rel="icon" href="icon.png">
+<style>
+  :root {
+    --bg: #0b0d12; --card: #151821; --line: #262b38; --text: #f2f3f7; --muted: #a2a8b8;
+    --accent: #e0559f; --accent2: #7d5cf0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text); line-height: 1.55;
+    font: 17px/1.55 -apple-system, "Segoe UI", system-ui, Roboto, sans-serif;
+  }
+  a { color: inherit; }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 0 20px; }
+  nav { display: flex; align-items: center; gap: 12px; padding: 20px 0; }
+  nav img { width: 32px; height: 32px; border-radius: 8px; }
+  nav b { font-size: 18px; }
+  nav .sp { flex: 1; }
+  nav a, nav button {
+    color: var(--muted); text-decoration: none; background: none; border: 0; cursor: pointer;
+    font: inherit; font-size: 15px; padding: 6px 8px;
+  }
+  nav a:hover, nav button:hover { color: var(--text); }
+  .hero { padding: 56px 0 40px; text-align: center; }
+  h1 { font-size: clamp(34px, 6.5vw, 58px); line-height: 1.08; letter-spacing: -0.02em; margin: 0 0 18px; }
+  .lead { color: var(--muted); font-size: 19px; max-width: 640px; margin: 0 auto 30px; }
+  .btn {
+    display: inline-block; padding: 14px 26px; border-radius: 12px; font-weight: 600; text-decoration: none;
+    background: linear-gradient(135deg, var(--accent), var(--accent2)); color: #fff;
+  }
+  .btn.alt { background: none; border: 1px solid var(--line); color: var(--text); margin-left: 8px; }
+  .note { color: var(--muted); font-size: 14px; margin-top: 14px; }
+  .shot { display: block; width: 100%; height: auto; border-radius: 14px; border: 1px solid var(--line); }
+  h2 { font-size: 28px; letter-spacing: -0.01em; margin: 64px 0 20px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 22px; }
+  .card h3 { margin: 0 0 8px; font-size: 18px; }
+  .card p { margin: 0; color: var(--muted); font-size: 16px; }
+  .media { display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start; justify-content: center; }
+  .media img { max-width: 100%; height: auto; border-radius: 12px; }
+  ul.plain { padding-left: 20px; color: var(--muted); }
+  ul.plain li { margin: 8px 0; }
+  ol { padding-left: 22px; color: var(--muted); }
+  ol li { margin: 10px 0; }
+  ol b { color: var(--text); }
+  footer { margin-top: 72px; padding: 28px 0 40px; border-top: 1px solid var(--line); color: var(--muted); font-size: 14px; }
+  footer a { margin-right: 14px; }
+  [data-lang="tr"] .en, [data-lang="en"] .tr { display: none; }
+</style>
+</head>
+<body data-lang="en">
+<div class="wrap">
+  <nav>
+    <img src="icon.png" alt="">
+    <b>Hexsight</b>
+    <span class="sp"></span>
+    <a href="https://github.com/bard58/hexsight">GitHub</a>
+    <button id="lang" type="button" aria-label="Change language"><span class="en">Türkçe</span><span class="tr">English</span></button>
+  </nav>
+
+  <header class="hero">
+    <h1 class="en">Three augment cards.<br>Their tiers and game counts.<br>Your call.</h1>
+    <h1 class="tr">Üç eklenti kartı.<br>Kademeleri ve kaç maça dayandıkları.<br>Seçim senin.</h1>
+    <p class="lead en">A free, open-source Windows helper for ARAM Mayhem. One exe of about 6 MB, with no ads and no account.</p>
+    <p class="lead tr">ARAM: Şamata için ücretsiz, açık kaynaklı bir Windows yardımcısı. Tek exe, yaklaşık 6 MB. Reklam yok, hesap yok.</p>
+    <a class="btn" href="https://github.com/bard58/hexsight/releases/latest"><span class="en">Download for Windows</span><span class="tr">Windows için indir</span></a>
+    <a class="btn alt" href="https://github.com/bard58/hexsight"><span class="en">Source code</span><span class="tr">Kaynak kod</span></a>
+    <p class="note en">On the download page, pick the file that ends in <code>windows-x64.exe</code>. Windows may warn you because the file is not signed.</p>
+    <p class="note tr">İndirme sayfasında adı <code>windows-x64.exe</code> ile biten dosyayı seç. Dosya imzasız olduğu için Windows uyarı verebilir.</p>
+  </header>
+
+  <img class="shot" src="promo/ingame-pick-en.png" alt="Illustration of an augment pick screen with the Hexsight overlay and tier badges, with sample data." width="1920" height="1080">
+  <p class="note en">Illustration with sample data.</p>
+  <p class="note tr">Örnek veriyle hazırlanmış çizim.</p>
+
+  <h2><span class="en">What it does</span><span class="tr">Ne yapar?</span></h2>
+  <div class="grid">
+    <div class="card en"><h3>Augment picks</h3><p>Reads the three cards from your screen with Windows OCR. Shows a tier, the games behind it, and a confidence meter.</p></div>
+    <div class="card tr"><h3>Eklenti seçimi</h3><p>Ekrandaki üç kartı Windows OCR ile okur. Kademeyi, dayandığı maç sayısını ve güven göstergesini gösterir.</p></div>
+    <div class="card en"><h3>Champ select</h3><p>Tier badges on the bench, one-click swaps, trade requests, summoner spell suggestions, and item sets for the in-game shop.</p></div>
+    <div class="card tr"><h3>Şampiyon seçimi</h3><p>Yedeklerde kademe rozeti, tek tıkla değişim, takas istekleri, sihirdar büyüsü önerileri ve oyun içi mağaza için eşya setleri.</p></div>
+    <div class="card en"><h3>In game</h3><p>Next-item tips and a short enemy summary: damage mix, the fed enemy, and the healers.</p></div>
+    <div class="card tr"><h3>Maçta</h3><p>Sıradaki eşya önerileri ve rakip takımın kısa özeti: hasar dağılımı, öne geçen rakip ve iyileştirenler.</p></div>
+    <div class="card en"><h3>My games</h3><p>Your Mayhem history, with augments and results. It stays on your PC.</p></div>
+    <div class="card tr"><h3>Maçlarım</h3><p>Eklentileri ve sonuçlarıyla Şamata geçmişin. Bilgisayarında kalır.</p></div>
+  </div>
+
+  <h2><span class="en">See it</span><span class="tr">Görüntüler</span></h2>
+  <div class="media en">
+    <img src="screenshots/01-overlay-strip.png" alt="The Hexsight overlay at a pick screen." width="440" height="185" loading="lazy">
+    <img src="screenshots/03-item-tips.png" alt="The item tips card." width="440" height="181" loading="lazy">
+    <img src="screenshots/02-champ-select.png" alt="Hexsight in champion select." width="375" height="583" loading="lazy">
+  </div>
+  <div class="media tr">
+    <img src="screenshots/01-overlay-strip-tr.png" alt="Seçim ekranında Hexsight paneli." width="440" height="185" loading="lazy">
+    <img src="screenshots/02-champ-select-tr.png" alt="Şampiyon seçiminde Hexsight." width="375" height="583" loading="lazy">
+  </div>
+
+  <h2><span class="en">What it does not do</span><span class="tr">Ne yapmaz?</span></h2>
+  <ul class="plain en">
+    <li>It does not read or change game memory, and it does not inject code.</li>
+    <li>It does not press keys or click for you. You make every pick.</li>
+    <li>It shows no augment win rates and never says "pick this".</li>
+    <li>It has no account, no telemetry, and no ads. See the <a href="https://github.com/bard58/hexsight/blob/main/PRIVACY.md">privacy notes</a>.</li>
+    <li>Riot has not reviewed Hexsight. No third-party tool can promise that it carries no risk of a ban. You use it at your own risk.</li>
+  </ul>
+  <ul class="plain tr">
+    <li>Oyun belleğini okumaz, değiştirmez, oyuna kod sokmaz.</li>
+    <li>Senin yerine tuşa basmaz, tıklamaz. Her seçimi sen yaparsın.</li>
+    <li>Eklenti kazanma oranı göstermez, "bunu seç" demez.</li>
+    <li>Hesap, telemetri ve reklam yok. Ayrıntılar <a href="https://github.com/bard58/hexsight/blob/main/PRIVACY.md">gizlilik notlarında</a>.</li>
+    <li>Riot, Hexsight'ı incelemedi. Üçüncü taraf araçların ban riski taşımadığı garanti edilemez. Kullanım riski sana ait.</li>
+  </ul>
+
+  <h2><span class="en">Get started</span><span class="tr">Nasıl başlanır?</span></h2>
+  <ol class="en">
+    <li><b>Download</b> the exe from the <a href="https://github.com/bard58/hexsight/releases/latest">Releases page</a>.</li>
+    <li><b>Set League to Borderless.</b> Hexsight cannot read cards in Fullscreen.</li>
+    <li><b>Start Hexsight, then join an ARAM Mayhem game.</b> F8 shows or hides the overlay.</li>
+  </ol>
+  <ol class="tr">
+    <li><a href="https://github.com/bard58/hexsight/releases/latest">Sürümler sayfasından</a> exe'yi <b>indir</b>.</li>
+    <li><b>League'i çerçevesiz moda al.</b> Hexsight tam ekranda kartları okuyamaz.</li>
+    <li><b>Hexsight'ı aç, sonra bir ARAM: Şamata maçına gir.</b> F8 paneli gösterir ya da gizler.</li>
+  </ol>
+
+  <footer>
+    <p><a href="https://github.com/bard58/hexsight">GitHub</a><a href="https://github.com/bard58/hexsight/issues">Issues</a><a href="https://github.com/bard58/hexsight/blob/main/PRIVACY.md">Privacy</a></p>
+    <p>Hexsight isn't endorsed by Riot Games and doesn't reflect the views or opinions of Riot Games or anyone officially involved in producing or managing Riot Games properties. Riot Games, and all associated properties are trademarks or registered trademarks of Riot Games, Inc.</p>
+  </footer>
+</div>
+<script>
+  (function () {
+    var saved = null;
+    try { saved = localStorage.getItem('lang'); } catch (e) {}
+    var q = new URLSearchParams(location.search).get('lang');
+    var lang = q || saved || ((navigator.language || '').toLowerCase().indexOf('tr') === 0 ? 'tr' : 'en');
+    function set(l) {
+      document.body.dataset.lang = l;
+      document.documentElement.lang = l;
+    }
+    set(lang === 'tr' ? 'tr' : 'en');
+    document.getElementById('lang').addEventListener('click', function () {
+      var next = document.body.dataset.lang === 'tr' ? 'en' : 'tr';
+      set(next);
+      try { localStorage.setItem('lang', next); } catch (e) {}
+    });
+  })();
+</script>
+</body>
+</html>
