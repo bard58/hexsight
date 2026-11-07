@@ -15,7 +15,7 @@ Hexsight is a free, open source project. The maintainer is listed on the GitHub 
 - **The League Client API on your PC (127.0.0.1).** Hexsight gets the port and the password from the `lockfile` in your League folder. It keeps them in memory and uses them only for local calls.
 - **The Live Client Data API on your PC (127.0.0.1, port 2999).** In a game, it gives your champion, level, game time, and death state. For the item tips and the enemy summary, Hexsight also reads the champion, items, and score of all ten players. It uses the names only to find you and does not keep them.
 - **Your match history from the League Client.** Hexsight reads your player ID and your finished ARAM Mayhem games. It keeps only your own record of a game: champion, augments, result, kills, deaths, assists. It does not keep the other nine players.
-- **One value in `Config\game.cfg` in the League folder:** the window mode. Hexsight does not change this file.
+- **One value in `Config\game.cfg` in the League folder:** the window mode. Hexsight changes it only when you click the button "Set to Borderless": the League Client then saves the new window mode into this file.
 - **A capture of the game area of your screen,** for card reading. See section 4.
 
 ## 3. What Hexsight stores on your PC
@@ -85,7 +85,7 @@ Hexsight ücretsiz ve açık kaynaklı bir proje. Geliştiriciyi bu deponun GitH
 - **Bilgisayarındaki League Client API'si (127.0.0.1).** Port ve parolayı League klasöründeki `lockfile` dosyasından alır. İkisini bellekte tutar ve yalnızca yerel çağrılarda kullanır.
 - **Bilgisayarındaki Live Client Data API'si (127.0.0.1, port 2999).** Oyundayken şampiyonunu, seviyeni, oyun süresini ve ölü olup olmadığını verir. Eşya önerileri ve karşı takımın özeti için Hexsight on oyuncunun şampiyonunu, eşyalarını ve skorunu da okur. Oyuncu adlarını yalnızca seni bulmak için kullanır, saklamaz.
 - **League Client'taki maç geçmişin.** Oyuncu kimliğini ve biten ARAM: Şamata maçlarını okur. Maçla ilgili yalnızca senin kaydını tutar: şampiyon, eklentiler, sonuç, öldürme, ölüm, asist. Diğer dokuz oyuncunun kaydını tutmaz.
-- **League klasöründeki `Config\game.cfg` dosyasından tek bir değer:** pencere modu. Hexsight bu dosyayı değiştirmez.
+- **League klasöründeki `Config\game.cfg` dosyasından tek bir değer:** pencere modu. Hexsight bu dosyayı yalnızca sen "Çerçevesiz yap" düğmesine tıklayınca değiştirir: League istemcisi yeni pencere modunu bu dosyaya kaydeder.
 - **Oyun ekranının bir bölümü,** eklenti kartlarını okumak için. 4. bölüme bak.
 
 ### 3. Hexsight bilgisayarında neyi saklar?

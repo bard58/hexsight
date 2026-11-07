@@ -407,6 +407,10 @@ impl Shared {
         self.offered.clear();
         self.live = Live::default();
         self.capture = CaptureHealth::Fine;
+        // A note about a pick of this game ends with it.
+        if self.ocr_note == Some(Key::OcrGaveUp) {
+            self.ocr_note = None;
+        }
     }
 }
 
@@ -675,6 +679,8 @@ fn poll_loop(
     // The player list for the suggestions: when it was read last, and the gold of the last pass.
     let mut last_roster: Option<Instant> = None;
     let mut last_gold: Option<u32> = None;
+    // The last state of the client connection that went to the log.
+    let mut last_link = String::new();
 
     loop {
         let tick = Instant::now();
@@ -698,10 +704,30 @@ fn poll_loop(
         } else {
             Phase::Offline
         };
-        // The client can restart during a game. The game API still answers.
-        if now_phase == Phase::Offline && phase == Phase::InGame && live.get("gamestats").is_some()
-        {
+        // The game API answers while a game runs, also when Hexsight cannot reach the client
+        // (a restart of the client, or a client that does not answer). Ask it then, and in a
+        // game whose queue the client did not name yet.
+        let game_mode =
+            if now_phase == Phase::Offline || (now_phase == Phase::InGame && queue.is_none()) {
+                live.get("gamestats")
+                    .map(|g| g["gameMode"].as_str().unwrap_or("").to_string())
+            } else {
+                None
+            };
+        if now_phase == Phase::Offline && game_mode.is_some() {
             now_phase = Phase::InGame;
+        }
+        // The log: one line each time the state of the client connection changes.
+        let link = client_link(
+            lcu.connected(),
+            lcu.port(),
+            misses,
+            lcu.last_error(),
+            game_mode.as_deref(),
+        );
+        if link != last_link {
+            log_client(&link);
+            last_link = link;
         }
         if now_phase != phase {
             queue_read = false;
@@ -730,6 +756,7 @@ fn poll_loop(
             };
             let read = session.and_then(|s| s.queue);
             queue = next_queue(now_phase, read, queue);
+            queue = queue_from_mode(now_phase, queue, game_mode.as_deref());
             if let Some(id) = session.and_then(|s| s.game_id) {
                 game_id = Some(id);
             }
@@ -1308,6 +1335,59 @@ pub(crate) fn next_queue(phase: Phase, read: Option<i64>, queue: Option<i64>) ->
     }
 }
 
+/// The queue of ARAM Mayhem. The game API names the mode (`KIWI`), not the queue.
+pub(crate) const MAYHEM_QUEUE: i64 = 2400;
+
+/// The queue in a game that the client did not name: the mode of the game API decides.
+/// A queue from the client always wins.
+pub(crate) fn queue_from_mode(phase: Phase, queue: Option<i64>, mode: Option<&str>) -> Option<i64> {
+    match (phase, queue, mode) {
+        (Phase::InGame, None, Some("KIWI")) => Some(MAYHEM_QUEUE),
+        _ => queue,
+    }
+}
+
+/// One line about the client connection for the log. The poll loop writes it when it changes.
+/// It holds the port at most, never the password.
+pub(crate) fn client_link(
+    connected: bool,
+    port: Option<u16>,
+    misses: u32,
+    error: Option<&str>,
+    game_mode: Option<&str>,
+) -> String {
+    let client = match (connected, port) {
+        (false, _) | (true, None) => "League Client: no lockfile or no answer".to_string(),
+        (true, Some(p)) if misses >= 4 => {
+            format!(
+                "League Client: port {p} does not answer: {}",
+                error.unwrap_or("unknown error")
+            )
+        }
+        (true, Some(p)) => format!("League Client: connected on port {p}"),
+    };
+    match game_mode {
+        Some(m) if !connected || misses >= 4 => {
+            format!("{client}. Game API: a game runs, mode {m}")
+        }
+        _ => client,
+    }
+}
+
+/// Write a line about the client connection to the data log. The tests never write it.
+fn log_client(text: &str) {
+    #[cfg(not(test))]
+    crate::datalog::append(
+        &crate::cache::app_dir(),
+        &format!(
+            "{} {text}",
+            crate::history::iso_date(crate::datalog::now_ms())
+        ),
+    );
+    #[cfg(test)]
+    let _ = text;
+}
+
 /// The own champion that the window shows after one pass of the poll loop. A known
 /// champion (`mine`) wins. Without one, a champ select forgets the champion of the
 /// game before: at the start of the champ select (`entered_select`), and whenever the
@@ -1653,6 +1733,11 @@ fn ocr_loop(shared: Arc<Mutex<Shared>>, ctx: egui::Context) {
                 let mut s = shared.lock().unwrap();
                 s.picks_done = due;
                 s.picks_guessed = true;
+                // Say so: without a note the player sees nothing at all.
+                if s.ocr_note.is_none() {
+                    s.ocr_note = Some(Key::OcrGaveUp);
+                    ctx.request_repaint();
+                }
                 drop(s);
                 waiting = None;
                 continue;
@@ -1698,7 +1783,12 @@ fn ocr_loop(shared: Arc<Mutex<Shared>>, ctx: egui::Context) {
                 std::thread::sleep(Duration::from_secs(30));
                 continue;
             }
-            shared.lock().unwrap().ocr_language = ocr.as_ref().map(|e| e.language().to_string());
+            let mut s = shared.lock().unwrap();
+            s.ocr_language = ocr.as_ref().map(|e| e.language().to_string());
+            // The engine works now: an old note that it does not must go.
+            if s.ocr_note == Some(Key::OcrUnavailable) {
+                s.ocr_note = None;
+            }
         }
         let (Some(engine), Some((_, m))) = (&ocr, &matcher) else {
             continue;
@@ -1771,6 +1861,10 @@ fn ocr_loop(shared: Arc<Mutex<Shared>>, ctx: egui::Context) {
                     screen,
                     geometry,
                 });
+                // Cards came: a note that the last pick was not read no longer holds.
+                if s.ocr_note == Some(Key::OcrGaveUp) {
+                    s.ocr_note = None;
+                }
             } else if s.offer.is_some() {
                 misses += 1;
                 // Cards gone: the player picked. Two misses avoid flicker.
@@ -2420,6 +2514,59 @@ mod tests {
             (s.last_action.as_deref(), s.last_detail.as_deref()),
             (Some("trade failed"), Some("timeout"))
         );
+    }
+
+    #[test]
+    fn the_game_api_mode_gives_the_queue_only_when_the_client_names_none() {
+        // The client is not reached, and the game API says ARAM Mayhem: the Mayhem queue.
+        assert_eq!(
+            queue_from_mode(Phase::InGame, None, Some("KIWI")),
+            Some(MAYHEM_QUEUE)
+        );
+        assert!(is_mayhem(MAYHEM_QUEUE));
+        // Another mode, no answer, or no game: nothing to add.
+        assert_eq!(queue_from_mode(Phase::InGame, None, Some("ARAM")), None);
+        assert_eq!(queue_from_mode(Phase::InGame, None, None), None);
+        assert_eq!(queue_from_mode(Phase::Lobby, None, Some("KIWI")), None);
+        // A queue from the client always wins.
+        assert_eq!(
+            queue_from_mode(Phase::InGame, Some(450), Some("KIWI")),
+            Some(450)
+        );
+    }
+
+    #[test]
+    fn the_client_line_of_the_log_names_the_state_and_never_a_password() {
+        assert_eq!(
+            client_link(true, Some(62671), 0, None, None),
+            "League Client: connected on port 62671"
+        );
+        assert_eq!(
+            client_link(true, Some(62671), 4, Some("timeout: global"), Some("KIWI")),
+            "League Client: port 62671 does not answer: timeout: global. Game API: a game runs, mode KIWI"
+        );
+        assert_eq!(
+            client_link(false, None, 0, None, None),
+            "League Client: no lockfile or no answer"
+        );
+        // Three misses keep the connection, so the line stays the same: no new log line.
+        assert_eq!(
+            client_link(true, Some(1), 3, Some("x"), Some("KIWI")),
+            client_link(true, Some(1), 0, None, None)
+        );
+    }
+
+    #[test]
+    fn a_note_about_a_missed_pick_ends_with_the_game_and_a_note_about_ocr_stays() {
+        let mut s = Shared {
+            ocr_note: Some(Key::OcrGaveUp),
+            ..Default::default()
+        };
+        s.end_game();
+        assert_eq!(s.ocr_note, None);
+        s.ocr_note = Some(Key::OcrUnavailable);
+        s.end_game();
+        assert_eq!(s.ocr_note, Some(Key::OcrUnavailable));
     }
 
     #[test]

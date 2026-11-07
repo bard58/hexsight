@@ -4,6 +4,19 @@ All notable changes to this project are in this file. The format follows [Keep a
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-08
+
+### Fixed
+
+- Hexsight now finds an ARAM Mayhem game through the game itself when it cannot reach the League Client. Before, the window could stay at "League closed" for the whole game.
+- When Hexsight cannot read the cards of a pick, it now says so and tells you to press the "Read the cards now" key. Before, it showed nothing.
+- The note that card reading does not work now goes away when card reading works again.
+- PRIVACY.md now says that the "Set to Borderless" button changes the window mode in `game.cfg`.
+
+### Added
+
+- `hexsight.log` gets one line each time the connection to the League Client changes. The line holds the port and the error, never the password.
+
 ## [0.1.1] - 2026-10-31
 
 ### Fixed

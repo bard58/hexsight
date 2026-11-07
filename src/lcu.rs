@@ -18,6 +18,8 @@ pub struct Lcu {
     agent: ureq::Agent,
     install_dir: Option<PathBuf>,
     lock: Option<Lockfile>,
+    /// The error of the last failed request, for the log. It holds no password.
+    last_error: Option<String>,
 }
 
 /// Agent for 127.0.0.1 only. Riot uses a self-signed cert on both local APIs. It starts no
@@ -40,11 +42,22 @@ impl Lcu {
             agent: local_agent(),
             install_dir: None,
             lock: None,
+            last_error: None,
         }
     }
 
     pub fn install_dir(&self) -> Option<&Path> {
         self.install_dir.as_deref()
+    }
+
+    /// The port of the lockfile that Hexsight uses now.
+    pub fn port(&self) -> Option<u16> {
+        self.lock.as_ref().map(|l| l.port)
+    }
+
+    /// The error of the last failed request.
+    pub fn last_error(&self) -> Option<&str> {
+        self.last_error.as_deref()
     }
 
     pub fn connected(&self) -> bool {
@@ -89,17 +102,17 @@ impl Lcu {
             .call()
         {
             Ok(mut r) => r.body_mut().read_json::<Value>().ok(),
-            // Refused connection: the client closed or restarted. Find it again.
-            Err(ureq::Error::ConnectionFailed) => {
-                self.lock = None;
+            Err(e) => {
+                self.last_error = Some(e.to_string());
+                // Refused connection: the client closed or restarted. Find it again.
+                // A timeout or an HTTP error keeps the connection.
+                let refused = matches!(e, ureq::Error::ConnectionFailed)
+                    || matches!(&e, ureq::Error::Io(io) if io.kind() == std::io::ErrorKind::ConnectionRefused);
+                if refused {
+                    self.lock = None;
+                }
                 None
             }
-            Err(ureq::Error::Io(e)) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
-                self.lock = None;
-                None
-            }
-            // A timeout or an HTTP error keeps the connection.
-            Err(_) => None,
         }
     }
 
@@ -488,7 +501,7 @@ impl TradeCall {
 }
 
 /// The two routes of one trade call, in the order to try them. The `trades`
-/// route is the current one. Some clients call `champion-swaps`, the name in
+/// route is the current one. Blitz also calls `champion-swaps`, the name in
 /// some client versions.
 fn trade_routes(id: i64, call: TradeCall) -> [String; 2] {
     let word = call.word();

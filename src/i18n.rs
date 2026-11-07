@@ -396,6 +396,9 @@ table! {
         "GitHub’da yeni bir sayfa açar. Hexsight sürümün, Windows sürümün ve ana ayarların metne yazılır. Riot kimliğin ve dosya yolların yazılmaz.";
     OpenDataFolder = "Open the data folder", "Veri klasörünü aç";
     OcrUnavailable = "Card reading isn't working. Add English (United States) to Windows: Settings > Time & language > Language & region.", "Kart okuma çalışmıyor. Windows’a İngilizce (ABD) dilini ekle: Ayarlar > Saat ve dil > Dil ve bölge.";
+    // The card reader gave up on a pick screen: it found no cards before the time ran out.
+    OcrGaveUp = "Hexsight could not read the cards of this pick. Next time, press the “Read the cards now” key while the cards show.",
+        "Bu seçimin kartları okunamadı. Sonraki seçimde kartlar açıkken “Kartları şimdi oku” tuşuna bas.";
 
     // ---- Overlay
     OverlayDrag = "Drag to move · Ctrl+{0} to lock", "Taşımak için sürükle · Kilitle: Ctrl+{0}";
