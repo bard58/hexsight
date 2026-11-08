@@ -40,10 +40,11 @@ const SLOT_STEP: i32 = 3;
 const OTHER_BASE: i32 = 30;
 const OTHER_STEP: i32 = 2;
 /// The base of an item that the data ties to a known or an offered augment, and
-/// the base of the anti-heal item that a rule adds.
+/// the base of the anti-heal item and of the resist item that a rule adds.
 const LINK_KNOWN_BASE: i32 = 60;
 const LINK_OFFERED_BASE: i32 = 30;
 const ANTI_HEAL_BASE: i32 = 50;
+const RESIST_BASE: i32 = 50;
 /// Added when you own a part of the item, so the plan does not jump after a purchase.
 const STABLE: i32 = 8;
 /// The bonus of a resist rule: for a tank, a utility or a bruiser build, and for the others.
@@ -59,8 +60,12 @@ const KNOWN_BONUS: i32 = 35;
 const MIN_SCORE: i32 = 40;
 /// The third pick goes to an item that a rule raised, if it has at least this score.
 const RULE_PICK_MIN: i32 = 60;
+/// Before your first finished item, the rule item takes the third pick only this close to its score.
+const RULE_PICK_GAP: i32 = 15;
 /// An item with at least this price, and no boots, counts as a finished item.
 const FINISHED_GOLD: u32 = 2000;
+/// The price of the basic Boots. Boots above it, or with parts, are finished boots.
+const BASIC_BOOTS_GOLD: u32 = 300;
 /// An item with more tags than this is no clear item of any kind: no rule touches it.
 const MAX_RULE_TAGS: u8 = 6;
 /// How many levels of the recipe tree Hexsight follows.
@@ -86,8 +91,8 @@ const RULE_MIN_COUNT: usize = 2;
 const CLASS_AP: f32 = 0.6;
 const CLASS_AD: f32 = 0.4;
 
-/// Champions that heal a lot, by alias: Hexsight's own list, not statistics. Any enemy with an
-/// item of lifesteal or omnivamp counts as a healer too.
+/// Champions that heal a lot, by alias: Hexsight's own list, not statistics. Any enemy with a
+/// finished item of lifesteal or omnivamp counts as a healer too.
 const HEALERS: [&str; 17] = [
     "Soraka",
     "Yuumi",
@@ -113,6 +118,18 @@ const HEALERS: [&str; 17] = [
 const ANTI_HEAL_AP: [i64; 2] = [3165, 3916];
 const ANTI_HEAL_AD: [i64; 3] = [3033, 6609, 3123];
 const ANTI_HEAL_TANK: [i64; 2] = [3075, 3076];
+
+/// Items with magic resist, and items with armor, by the class of the player. The resist rule adds
+/// the first one that the shop sells when the list has no such item. All were in the shop of
+/// CommunityDragon: Banshee's Veil; Zhonya's Hourglass; Maw of Malmortius, Mercurial Scimitar and
+/// Wit's End; Death's Dance and Guardian Angel; Force of Nature and Kaenic Rookern; Randuin's Omen
+/// and Frozen Heart.
+const MR_AP: [i64; 1] = [3102];
+const ARMOR_AP: [i64; 1] = [3157];
+const MR_AD: [i64; 3] = [3156, 3139, 3091];
+const ARMOR_AD: [i64; 2] = [6333, 3026];
+const MR_TANK: [i64; 2] = [4401, 2504];
+const ARMOR_TANK: [i64; 2] = [3143, 3110];
 
 fn is_anti_heal(id: i64) -> bool {
     ANTI_HEAL_AP.contains(&id) || ANTI_HEAL_AD.contains(&id) || ANTI_HEAL_TANK.contains(&id)
@@ -308,9 +325,9 @@ fn is_healer(sd: &StaticData, p: &Player) -> bool {
         .map_or("", |c| c.alias.as_str());
     HEALERS.iter().any(|h| h.eq_ignore_ascii_case(alias))
         || p.items.iter().any(|id| {
-            sd.item_info
-                .get(id)
-                .is_some_and(|i| i.cats & cat::LIFESTEAL != 0)
+            sd.item_info.get(id).is_some_and(|i| {
+                i.cats & cat::LIFESTEAL != 0 && i.cats & cat::BOOTS == 0 && i.total >= FINISHED_GOLD
+            })
         })
 }
 
@@ -319,7 +336,12 @@ fn is_tanky(sd: &StaticData, p: &Player) -> bool {
         .items
         .iter()
         .filter_map(|id| sd.item_info.get(id))
-        .filter(|i| i.cats & cat::BOOTS == 0 && i.cats & (cat::ARMOR | cat::MR) != 0)
+        // A damage item with armor or magic resist (Zhonya's Hourglass) counts only with health too.
+        .filter(|i| {
+            i.cats & cat::BOOTS == 0
+                && i.cats & (cat::ARMOR | cat::MR) != 0
+                && (i.cats & (cat::AP | cat::AD) == 0 || i.cats & cat::HEALTH != 0)
+        })
         .count();
     let tank_role = sd
         .roles
@@ -336,7 +358,8 @@ pub fn context(roster: &Roster, sd: &StaticData) -> GameContext {
         ..Default::default()
     };
 
-    // The damage mix: each known enemy champion gives a share of ability power. A fed enemy counts more.
+    // The damage mix: each known enemy champion gives a share of ability power, weighted by the gold
+    // of its damage items (the prior gold at least). A fed enemy counts more.
     let (mut sum, mut weights, mut known) = (0.0, 0.0, 0);
     for p in enemies.iter().filter(|p| p.champion > 0) {
         known += 1;
@@ -346,7 +369,8 @@ pub fn context(roster: &Roster, sd: &StaticData) -> GameContext {
             prior_ap * PRIOR_GOLD + gold_ap,
             prior_ad * PRIOR_GOLD + gold_ad,
         );
-        let weight = if is_fed(p) { FED_WEIGHT } else { 1.0 };
+        let gold = (gold_ap + gold_ad).max(PRIOR_GOLD);
+        let weight = gold * if is_fed(p) { FED_WEIGHT } else { 1.0 };
         sum += weight * ap / (ap + ad);
         weights += weight;
     }
@@ -563,8 +587,9 @@ fn pick_build(builds: &[Build], owned: &[i64]) -> usize {
     best
 }
 
-/// Your damage class from the damage split of your champion: mostly ability power, mostly attack
-/// damage, or mixed (or unknown).
+/// Your damage class: mostly ability power, mostly attack damage, or mixed (or unknown). It comes
+/// from the gold of the damage items in the core of your build, and from the damage split of your
+/// champion when the core has none.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Class {
     Ap,
@@ -572,11 +597,38 @@ enum Class {
     Mixed,
 }
 
-fn class_of(details: &ChampStats) -> Class {
-    match details.magic_share {
+fn class_of(sd: &StaticData, build: &Build, details: &ChampStats) -> Class {
+    let (ap, ad) = item_gold(sd, &build.items);
+    let share = if ap + ad > 0.0 {
+        Some(ap / (ap + ad))
+    } else {
+        details.magic_share
+    };
+    match share {
         Some(m) if m >= CLASS_AP => Class::Ap,
         Some(m) if m <= CLASS_AD => Class::Ad,
         _ => Class::Mixed,
+    }
+}
+
+/// A tank build: two core items with health and armor or magic resist, or the style "tank".
+fn is_tank_build(sd: &StaticData, build: &Build) -> bool {
+    let tanky = build
+        .items
+        .iter()
+        .filter_map(|id| sd.item_info.get(id))
+        .filter(|i| i.cats & cat::HEALTH != 0 && i.cats & (cat::ARMOR | cat::MR) != 0)
+        .count();
+    tanky >= 2 || build.name.eq_ignore_ascii_case("tank")
+}
+
+/// The bonus of a rule, less for each finished item of the kind that you own: all of it with
+/// none, half with one, and nothing with two or more.
+fn shrink(points: i32, owned: usize) -> i32 {
+    match owned {
+        0 => points,
+        1 => points / 2,
+        _ => 0,
     }
 }
 
@@ -595,8 +647,12 @@ impl Rules {
         Rules {
             vs_ap: c.ap_pct.filter(|&ap| ap >= MIX_RULE_PCT),
             vs_ad: c.ap_pct.map(|ap| 100 - ap).filter(|&ad| ad >= MIX_RULE_PCT),
+            // Two healers, or one healer that is the fed enemy.
             healers: Some(c.healers.len())
-                .filter(|&n| n >= RULE_MIN_COUNT)
+                .filter(|&n| {
+                    n >= RULE_MIN_COUNT
+                        || (n >= 1 && c.fed.is_some_and(|f| c.healers.contains(&f.champion)))
+                })
                 .map(|n| n.min(255) as u8),
             tanks: Some(c.tanks.len())
                 .filter(|&n| n >= RULE_MIN_COUNT)
@@ -648,6 +704,8 @@ struct Ranking {
     build: usize,
     /// At least one candidate fell out because the slots are full.
     no_slot: bool,
+    /// How many finished items you own.
+    finished: usize,
 }
 
 fn rank(input: &Input) -> Ranking {
@@ -655,7 +713,6 @@ fn rank(input: &Input) -> Ranking {
     let builds = &details.builds;
     let owned: &[i64] = &me.items;
     let info = |id: i64| sd.item_info.get(&id);
-    let cats = |id: i64| info(id).map_or(0, |i| i.cats);
     let built_in: HashSet<i64> = owned.iter().flat_map(|&id| recipe_tree(sd, id)).collect();
     let finished = owned
         .iter()
@@ -664,11 +721,46 @@ fn rank(input: &Input) -> Ranking {
         })
         .count();
     let free_slots = 6usize.saturating_sub(owned.len());
-    let owns_boots = owned.iter().any(|&id| cats(id) & cat::BOOTS != 0);
+    // The basic Boots are no pair yet: their upgrades stay on the list.
+    let owns_boots = owned.iter().any(|&id| {
+        info(id).is_some_and(|i| {
+            i.cats & cat::BOOTS != 0 && (i.total > BASIC_BOOTS_GOLD || !i.from.is_empty())
+        })
+    });
     let build_at = pick_build(builds, &with_earlier_forms(sd, owned));
     let build = &builds[build_at];
-    let class = class_of(details);
+    let class = class_of(sd, build, details);
+    let tank = is_tank_build(sd, build);
     let rules = Rules::of(input.ctx);
+    // The finished items that you own with one of these tags. Boots do not count.
+    let owned_with = |bits: u16| {
+        owned
+            .iter()
+            .filter(|&&id| {
+                info(id).is_some_and(|i| {
+                    i.cats & bits != 0 && i.cats & cat::BOOTS == 0 && i.total >= FINISHED_GOLD
+                })
+            })
+            .count()
+    };
+    // The bonus of each rule, less for each such item that you own.
+    let resist = if tank
+        || matches!(
+            build.name.to_ascii_lowercase().as_str(),
+            "utility" | "bruiser"
+        ) {
+        RESIST_TANK
+    } else {
+        RESIST_CARRY
+    };
+    let mr_bonus = shrink(resist, owned_with(cat::MR));
+    let armor_bonus = shrink(resist, owned_with(cat::ARMOR));
+    let pen = match class {
+        Class::Ap => cat::MAGIC_PEN,
+        Class::Ad => cat::ARMOR_PEN,
+        Class::Mixed => 0,
+    };
+    let pen_bonus = shrink(PEN_BONUS, owned_with(pen));
 
     let fate = |id: i64| -> Fate {
         let Some(i) = info(id) else { return Fate::Out };
@@ -768,7 +860,7 @@ fn rank(input: &Input) -> Ranking {
         let own = owned
             .iter()
             .any(|&id| is_anti_heal(id) && info(id).is_some_and(|i| i.total >= FINISHED_GOLD));
-        let list: &[i64] = if build.name.eq_ignore_ascii_case("tank") {
+        let list: &[i64] = if tank {
             &ANTI_HEAL_TANK
         } else {
             match class {
@@ -784,16 +876,44 @@ fn rank(input: &Input) -> Ranking {
             put(&mut cands, id, ANTI_HEAL_BASE, Reason::AntiHeal(n));
         }
     }
+    // A resist rule: add the resist item of your class when no candidate has that resist.
+    let resist_rules = [
+        (
+            rules.vs_ap.map(Reason::VsAp),
+            cat::MR,
+            mr_bonus,
+            [&MR_TANK[..], &MR_AP, &MR_AD],
+        ),
+        (
+            rules.vs_ad.map(Reason::VsAd),
+            cat::ARMOR,
+            armor_bonus,
+            [&ARMOR_TANK[..], &ARMOR_AP, &ARMOR_AD],
+        ),
+    ];
+    for (reason, bit, bonus, [tank_list, ap_list, ad_list]) in resist_rules {
+        let Some(reason) = reason.filter(|_| bonus > 0) else {
+            continue;
+        };
+        let have = cands.keys().any(|&id| {
+            info(id).is_some_and(|i| i.cats & bit != 0 && i.tags <= MAX_RULE_TAGS)
+                && fate(id) == Fate::Stays
+        });
+        let list: &[i64] = if tank {
+            tank_list
+        } else {
+            match class {
+                Class::Ap => ap_list,
+                Class::Ad => ad_list,
+                Class::Mixed => &[],
+            }
+        };
+        if !have && let Some(&id) = list.iter().find(|&&id| fate(id) == Fate::Stays) {
+            put(&mut cands, id, RESIST_BASE, reason);
+        }
+    }
 
     // Step 2: drop what cannot be bought, then add the bonuses.
-    let resist = if matches!(
-        build.name.to_ascii_lowercase().as_str(),
-        "tank" | "utility" | "bruiser"
-    ) {
-        RESIST_TANK
-    } else {
-        RESIST_CARRY
-    };
     let mut no_slot = false;
     let mut scored = Vec::new();
     for c in cands.into_values() {
@@ -813,22 +933,26 @@ fn rank(input: &Input) -> Ranking {
         // The rules. Each hit is (points, priority for a tie, reason). An item with many tags is left alone.
         let mut hits: Vec<(i32, u8, Reason)> = Vec::new();
         if item.tags <= MAX_RULE_TAGS {
-            if let Some(ap) = rules.vs_ap.filter(|_| item.cats & cat::MR != 0) {
-                hits.push((resist, 2, Reason::VsAp(ap)));
+            if let Some(ap) = rules
+                .vs_ap
+                .filter(|_| item.cats & cat::MR != 0 && mr_bonus > 0)
+            {
+                hits.push((mr_bonus, 2, Reason::VsAp(ap)));
             }
-            if let Some(ad) = rules.vs_ad.filter(|_| item.cats & cat::ARMOR != 0) {
-                hits.push((resist, 2, Reason::VsAd(ad)));
+            if let Some(ad) = rules
+                .vs_ad
+                .filter(|_| item.cats & cat::ARMOR != 0 && armor_bonus > 0)
+            {
+                hits.push((armor_bonus, 2, Reason::VsAd(ad)));
             }
             if let Some(n) = rules.healers.filter(|_| is_anti_heal(c.id)) {
                 hits.push((ANTI_HEAL_BONUS, 0, Reason::AntiHeal(n)));
             }
-            let pen = match class {
-                Class::Ap => cat::MAGIC_PEN,
-                Class::Ad => cat::ARMOR_PEN,
-                Class::Mixed => 0,
-            };
-            if let Some(n) = rules.tanks.filter(|_| item.cats & pen != 0) {
-                hits.push((PEN_BONUS, 1, Reason::VsTanks(n)));
+            if let Some(n) = rules
+                .tanks
+                .filter(|_| item.cats & pen != 0 && pen_bonus > 0)
+            {
+                hits.push((pen_bonus, 1, Reason::VsTanks(n)));
             }
         }
         let rule: i32 = hits.iter().map(|h| h.0).sum();
@@ -888,13 +1012,16 @@ fn rank(input: &Input) -> Ranking {
         scored,
         build: build_at,
         no_slot,
+        finished,
     }
 }
 
 /// The next items for the player. See the module description for the steps.
 ///
 /// Picks 1 and 2 follow the score. Pick 3 goes to the best item that a rule raised (with a score of at
-/// least `RULE_PICK_MIN`) when there is one, else to the next by score. Hexsight suggests; it buys nothing.
+/// least `RULE_PICK_MIN`) when there is one, else to the next by score. Before your first finished
+/// item, the rule item must also be within `RULE_PICK_GAP` points of the next by score. Hexsight
+/// suggests; it buys nothing.
 pub fn advise(input: &Input) -> Advice {
     let mut out = Advice {
         ctx: input.ctx.cloned(),
@@ -911,12 +1038,18 @@ pub fn advise(input: &Input) -> Advice {
     out.style = build.name.clone();
     let owned = &input.me.items;
     let mut chosen: Vec<&Scored> = ranking.scored.iter().take(2).collect();
+    let next = ranking.scored.get(2);
     let third = ranking
         .scored
         .iter()
         .skip(2)
-        .find(|s| s.rule > 0 && s.score >= RULE_PICK_MIN)
-        .or_else(|| ranking.scored.get(2));
+        .find(|s| {
+            s.rule > 0
+                && s.score >= RULE_PICK_MIN
+                && (ranking.finished >= 1
+                    || next.is_some_and(|n| n.score - s.score <= RULE_PICK_GAP))
+        })
+        .or(next);
     chosen.extend(third);
     out.items = chosen
         .into_iter()
@@ -1441,8 +1574,8 @@ mod tests {
         let r = roster(vec![
             // Soraka is in the list and also buys Bloodthirster: one healer.
             enemy(6, &[3072]),
-            // Garen is no healer by name, but Vampiric Scepter heals.
-            enemy(3, &[1053]),
+            // Garen is no healer by name, but Ravenous Hydra (a finished item of lifesteal) heals.
+            enemy(3, &[3074]),
             // Jinx has none of it.
             enemy(2, &[3031]),
             enemy(8, &[]),
@@ -1830,8 +1963,8 @@ mod tests {
             score_of(&rank(&i), 3075),
             Some(ANTI_HEAL_BASE + ANTI_HEAL_BONUS)
         );
-        // No known class and no tank build: nothing to inject.
-        let mixed = with_build("hybrid", &[3031, 3065, 3143], &[]);
+        // No known class and no tank build: nothing to inject. Infinity Edge and Rabadon's Deathcap cost the same.
+        let mixed = with_build("hybrid", &[3031, 3089], &[]);
         let mut i = input_of(&[], &mixed, &sd);
         i.ctx = Some(&two);
         assert!(rank(&i).scored.iter().all(|s| !is_anti_heal(s.id)));
@@ -1887,8 +2020,8 @@ mod tests {
         let r = rank(&i);
         assert_eq!(score_of(&r, 3036), Some(LATER_BASE + PEN_BONUS));
         assert_eq!(score_of(&r, 3135), Some(LATER_BASE - LATER_STEP));
-        // A mixed champion gets none. One tank is no reason.
-        let mut mixed = with_build("hybrid", &[3031], &[3036, 3135]);
+        // A mixed build gets none. One tank is no reason.
+        let mut mixed = with_build("hybrid", &[3031, 3089], &[3036, 3135]);
         mixed.magic_share = Some(0.5);
         let mut i = input_of(&[], &mixed, &sd);
         i.ctx = Some(&tanks);
@@ -1914,7 +2047,8 @@ mod tests {
         let a = advise(&i);
         assert_eq!(ids(&a), vec![2503, 6653, 3065]);
         assert_eq!(a.items[2].reason, Reason::VsAp(80));
-        // An item under 60 points does not take the place. Spirit Visage as the 4th later item has 50 + 16 and takes it.
+        // Spirit Visage as the 4th later item has 50 + 16 = 66 points. That is 18 under the third core item
+        // (84), more than 15: with no finished item the core item stays.
         let low = with_build("ap", &[2503, 6653, 3089], &[3157, 3118, 3116, 3065]);
         let mut i = input_of(&[], &low, &sd);
         i.ctx = Some(&ap);
@@ -1923,15 +2057,19 @@ mod tests {
             score_of(&r, 3065),
             Some(LATER_BASE - 3 * LATER_STEP + RESIST_CARRY)
         );
+        assert_eq!(ids(&advise(&i)), vec![2503, 6653, 3089]);
+        // With a finished item that you own (Void Staff), the rule item takes the place.
+        let mut i = input_of(&[3135], &low, &sd);
+        i.ctx = Some(&ap);
         assert_eq!(ids(&advise(&i)), vec![2503, 6653, 3065]);
         let very_low = with_build(
             "ap",
             &[2503, 6653, 3089],
             &[3157, 3118, 3116, 3003, 3135, 4645, 3115, 3065],
         );
-        let mut i = input_of(&[], &very_low, &sd);
+        let mut i = input_of(&[3135], &very_low, &sd);
         i.ctx = Some(&ap);
-        // 62 - 28 + 16 = 50, under RULE_PICK_MIN: the third core item stays.
+        // 62 - 28 + 16 = 50, under RULE_PICK_MIN: the third core item stays, also with a finished item.
         assert!(score_of(&rank(&i), 3065).is_some_and(|s| s < RULE_PICK_MIN));
         assert_eq!(ids(&advise(&i)), vec![2503, 6653, 3089]);
     }
@@ -2149,6 +2287,295 @@ mod tests {
         // A champion without a build has no suggestion, and says so.
         let none = advise(&input_of(&[], &ChampStats::default(), &sd));
         assert!(none.no_build && none.items.is_empty() && none.style.is_empty());
+    }
+
+    #[test]
+    fn a_part_or_boots_with_lifesteal_make_no_healer() {
+        let sd = sd();
+        // Doran's Blade, Vampiric Scepter (parts under 2000 gold) and Gluttonous Greaves (boots) have the
+        // tag of lifesteal, but Garen is no healer with them. Bloodthirster is a finished item: he is one.
+        for (items, healer) in [
+            (&[1055][..], false),
+            (&[1053], false),
+            (&[3008], false),
+            (&[3072], true),
+        ] {
+            let c = context(&roster(vec![enemy(3, items)]), &sd);
+            assert_eq!(c.healers.contains(&3), healer, "{items:?}");
+        }
+    }
+
+    #[test]
+    fn one_healer_fires_the_anti_heal_rule_only_when_it_is_the_fed_enemy() {
+        let sd = sd();
+        let mut d = heimer();
+        d.builds[0].later.retain(|&id| id != 3165);
+        let anti_heal = |enemies: Vec<Player>| {
+            let c = context(&roster(enemies), &sd);
+            let mut i = input_of(&[], &d, &sd);
+            i.ctx = Some(&c);
+            rank(&i)
+                .scored
+                .iter()
+                .find(|s| s.id == 3165)
+                .map(|s| s.reason)
+        };
+        // Soraka goes 9/2: the one healer is the fed enemy. Morellonomicon comes in for one healer.
+        assert_eq!(
+            anti_heal(vec![
+                scored_enemy(6, &[], 9, 2, 4),
+                enemy(2, &[]),
+                enemy(4, &[])
+            ]),
+            Some(Reason::AntiHeal(1))
+        );
+        // Soraka is calm and Zed is fed: one healer, and no rule.
+        assert_eq!(
+            anti_heal(vec![
+                enemy(6, &[]),
+                enemy(2, &[]),
+                scored_enemy(4, &[], 9, 2, 4)
+            ]),
+            None
+        );
+    }
+
+    #[test]
+    fn basic_boots_are_no_pair_and_their_upgrades_stay() {
+        let sd = sd();
+        let mut d = with_build("ap", &[2503, 6653, 3089], &[]);
+        d.builds[0].boots = vec![3020, 3158];
+        // Boots (1001, 300 gold, no parts) are no finished pair. Both upgrades stay and get the 8 points
+        // for the part that you own. They tie, and the cheaper pair (Ionian Boots) is the one that shows.
+        assert!(
+            sd.item_info[&1001].from.is_empty() && sd.item_info[&1001].total == BASIC_BOOTS_GOLD
+        );
+        let r = rank(&input_of(&[2503, 1001], &d, &sd));
+        assert_eq!(score_of(&r, 3158), Some(BOOTS_LATE + STABLE));
+        assert_eq!(r.scored.iter().filter(|s| s.boots).count(), 1);
+        // Sorcerer's Shoes are a finished pair: no boots come.
+        let r = rank(&input_of(&[2503, 3020], &d, &sd));
+        assert!(r.scored.iter().all(|s| !s.boots));
+    }
+
+    #[test]
+    fn the_mix_weighs_each_enemy_by_the_gold_of_its_damage_items() {
+        let sd = sd();
+        // A mage with six items of ability power (18950 gold), and a marksman and a support with none.
+        // The two without items count as the prior gold (1500 each). The mix is
+        // (18950 + 0 + 0.6 * 1500) / (18950 + 1500 + 1500) = 90 %. Each enemy counted the same before: 55 %.
+        let r = roster(vec![
+            enemy(1, &[3089, 6653, 3135, 4645, 3157, 3102]),
+            enemy(2, &[]),
+            enemy(6, &[]),
+        ]);
+        assert_eq!(context(&r, &sd).ap_pct, Some(90));
+        // A tank with resist items only weighs as the prior: the same mix as with no items.
+        let bare = roster(vec![enemy(5, &[]), enemy(1, &[]), enemy(2, &[])]);
+        let tanky = roster(vec![
+            enemy(5, &[3075, 3065, 3143]),
+            enemy(1, &[]),
+            enemy(2, &[]),
+        ]);
+        assert_eq!(context(&tanky, &sd).ap_pct, context(&bare, &sd).ap_pct);
+    }
+
+    #[test]
+    fn a_resist_or_penetration_bonus_shrinks_with_each_such_item_you_own() {
+        let sd = sd();
+        let score = |owned: &[i64], later: &[i64], team: &GameContext, id: i64| {
+            let d = with_build("ap", &[2503, 6653, 3089], later);
+            let mut i = input_of(owned, &d, &sd);
+            i.ctx = Some(team);
+            let r = rank(&i);
+            r.scored
+                .iter()
+                .find(|s| s.id == id)
+                .map(|s| (s.score, s.reason))
+        };
+        // Spirit Visage against an AP team: 16 points with no magic resist item, 8 with Banshee's Veil, and
+        // none with Banshee's Veil and Force of Nature. Mercury's Treads are boots and do not count.
+        let ap = ctx(Some(80), 0, 0);
+        assert_eq!(
+            score(&[], &[3065], &ap, 3065),
+            Some((LATER_BASE + RESIST_CARRY, Reason::VsAp(80)))
+        );
+        assert_eq!(
+            score(&[3102, 3111], &[3065], &ap, 3065),
+            Some((LATER_BASE + RESIST_CARRY / 2, Reason::VsAp(80)))
+        );
+        assert_eq!(
+            score(&[3102, 4401], &[3065], &ap, 3065),
+            Some((LATER_BASE, Reason::Later))
+        );
+        // Thornmail against an AD team: half with Zhonya's Hourglass (armor).
+        let ad = ctx(Some(20), 0, 0);
+        assert_eq!(
+            score(&[3157], &[3075], &ad, 3075),
+            Some((LATER_BASE + RESIST_CARRY / 2, Reason::VsAd(80)))
+        );
+        // Void Staff against two tanks: half with Shadowflame (magic penetration). Sorcerer's Shoes are boots.
+        let tanks = ctx(Some(50), 0, 2);
+        assert_eq!(
+            score(&[4645, 3020], &[3135], &tanks, 3135),
+            Some((LATER_BASE + PEN_BONUS / 2, Reason::VsTanks(2)))
+        );
+    }
+
+    #[test]
+    fn a_resist_rule_adds_a_resist_item_of_your_class_when_the_list_has_none() {
+        let sd = sd();
+        let added = |d: &ChampStats, owned: &[i64], team: &GameContext| {
+            let mut i = input_of(owned, d, &sd);
+            i.ctx = Some(team);
+            let r = rank(&i);
+            r.scored
+                .iter()
+                .filter(|s| s.reason == Reason::VsAp(80) || s.reason == Reason::VsAd(80))
+                .map(|s| (s.id, s.score))
+                .collect::<Vec<_>>()
+        };
+        let (ap, ad) = (ctx(Some(80), 0, 0), ctx(Some(20), 0, 0));
+        // An AP build without magic resist gets Banshee's Veil: 50 + 16 points, and the reason names the rule.
+        let mage = with_build("ap", &[2503, 6653, 3089], &[]);
+        assert_eq!(
+            added(&mage, &[], &ap),
+            vec![(3102, RESIST_BASE + RESIST_CARRY)]
+        );
+        // Against an AD team it gets Zhonya's Hourglass.
+        assert_eq!(
+            added(&mage, &[], &ad),
+            vec![(3157, RESIST_BASE + RESIST_CARRY)]
+        );
+        // With a finished item, the added item takes the third place.
+        let mut i = input_of(&[2503], &mage, &sd);
+        i.ctx = Some(&ap);
+        let a = advise(&i);
+        assert_eq!(ids(&a), vec![6653, 3089, 3102]);
+        assert_eq!(a.items[2].reason, Reason::VsAp(80));
+        // With one magic resist item the bonus is half, and with two it is gone, so nothing is added.
+        assert_eq!(
+            added(&mage, &[4401], &ap),
+            vec![(3102, RESIST_BASE + RESIST_CARRY / 2)]
+        );
+        assert!(added(&mage, &[4401, 2504], &ap).is_empty());
+        // An AD build gets Maw of Malmortius, and Death's Dance against an AD team.
+        let marksman = with_build("ad", &[3031, 3071, 3036], &[]);
+        assert_eq!(
+            added(&marksman, &[], &ap),
+            vec![(3156, RESIST_BASE + RESIST_CARRY)]
+        );
+        assert_eq!(
+            added(&marksman, &[], &ad),
+            vec![(6333, RESIST_BASE + RESIST_CARRY)]
+        );
+        // A tank build (two core items with health and magic resist) gets Randuin's Omen against AD.
+        let tank = with_build("ap", &[3065, 4401], &[]);
+        assert_eq!(
+            added(&tank, &[], &ad),
+            vec![(3143, RESIST_BASE + RESIST_TANK)]
+        );
+        // A list with a magic resist item gets nothing more: Spirit Visage gets the points.
+        let visage = with_build("ap", &[2503, 6653, 3089], &[3065]);
+        assert_eq!(
+            added(&visage, &[], &ap),
+            vec![(3065, LATER_BASE + RESIST_CARRY)]
+        );
+        // A mixed build has no list.
+        let mixed = with_build("hybrid", &[3031, 3089], &[]);
+        assert!(added(&mixed, &[], &ap).is_empty());
+    }
+
+    #[test]
+    fn the_class_and_the_tank_build_come_from_the_core_items() {
+        let sd = sd();
+        let two = ctx(Some(50), 2, 0);
+        let injected = |d: &ChampStats| {
+            let mut i = input_of(&[], d, &sd);
+            i.ctx = Some(&two);
+            rank(&i)
+                .scored
+                .iter()
+                .filter(|s| s.reason == Reason::AntiHeal(2))
+                .map(|s| s.id)
+                .collect::<Vec<_>>()
+        };
+        // The damage split says AD, but the core is all ability power: the AP list (Morellonomicon).
+        let mut ap = with_build("ap", &[2503, 6653, 3089], &[]);
+        ap.magic_share = Some(0.1);
+        assert_eq!(injected(&ap), vec![3165]);
+        // A core without damage items (Frozen Heart) falls back to the damage split: the AD list.
+        let mut none = with_build("ap", &[3110], &[]);
+        none.magic_share = Some(0.1);
+        assert_eq!(injected(&none), vec![3033]);
+        // Two core items with health and resist make a tank build, whatever its name: Thornmail.
+        let tank = with_build("ap", &[3065, 3143], &[]);
+        assert!(is_tank_build(&sd, &tank.builds[0]));
+        assert_eq!(injected(&tank), vec![3075]);
+        // One such item is no tank build. The name "tank" still is one.
+        assert!(!is_tank_build(
+            &sd,
+            &with_build("ap", &[3065, 3089], &[]).builds[0]
+        ));
+        assert!(is_tank_build(&sd, &with_build("tank", &[], &[]).builds[0]));
+    }
+
+    #[test]
+    fn a_damage_item_with_resist_makes_no_tank_without_health() {
+        let sd = sd();
+        // Zhonya's Hourglass, Banshee's Veil, Death's Dance and Maw of Malmortius give resist with damage.
+        for items in [&[3157, 6333][..], &[3102, 3156], &[3075, 6333]] {
+            assert!(
+                context(&roster(vec![enemy(3, items)]), &sd)
+                    .tanks
+                    .is_empty(),
+                "{items:?}"
+            );
+        }
+        // A tank with one of them is no tanky enemy either.
+        assert!(
+            context(&roster(vec![enemy(5, &[3157])]), &sd)
+                .tanks
+                .is_empty()
+        );
+        // Thornmail and Spirit Visage still count.
+        assert_eq!(
+            context(&roster(vec![enemy(3, &[3075, 3065])]), &sd).tanks,
+            vec![3]
+        );
+    }
+
+    #[test]
+    fn the_heimerdinger_game_gives_sensible_tips() {
+        let sd = sd();
+        let d = heimer();
+        // A real Heimerdinger build against an AP team with a fed Soraka and a Garen with Ravenous Hydra.
+        let r = roster(vec![
+            enemy(1, &[3089, 6653]),
+            enemy(7, &[3102]),
+            scored_enemy(6, &[], 9, 2, 4),
+            enemy(5, &[3075, 3065]),
+            enemy(3, &[3074, 3143]),
+        ]);
+        let c = context(&r, &sd);
+        assert_eq!(c.healers, vec![6, 3]);
+        assert_eq!(c.tanks, vec![5]);
+        let p = me(&[2503, 3020]);
+        let mut i = input(&p, &d, &sd);
+        i.ctx = Some(&c);
+        i.gold = Some(1200);
+        let a = advise(&i);
+        assert_eq!(a.style, "ap");
+        // Three items, none owned, none a pair of boots (you own Sorcerer's Shoes), all in the shop.
+        assert_eq!(a.items.len(), MAX_PICKS);
+        for pick in &a.items {
+            let info = &sd.item_info[&pick.id];
+            assert!(info.in_store && info.cats & cat::BOOTS == 0, "{}", pick.id);
+            assert!(!p.items.contains(&pick.id), "{}", pick.id);
+        }
+        // The next two core items, and Morellonomicon against the two healers (the fed Soraka and Garen).
+        assert_eq!(ids(&a), vec![6653, 3089, 3165]);
+        assert_eq!(a.items[2].reason, Reason::AntiHeal(2));
     }
 
     #[test]

@@ -482,6 +482,9 @@ table! {
     ReasonVsAp = "vs {0} AP", "{0} AP’ye karşı";
     ReasonVsAd = "vs {0} AD", "{0} AD’ye karşı";
     ReasonAntiHeal = "vs {0} healers", "{0} iyileştirene karşı";
+    // `ReasonAntiHeal` for one healer: the rule fires for one healer only when it is the fed enemy.
+    // Turkish keeps the noun singular after a number, and "fed" does not fit the overlay cell.
+    ReasonAntiHealFed = "vs a fed healer", "1 iyileştirene karşı";
     ReasonVsTanks = "vs {0} tanks", "{0} tanka karşı";
     ReasonPairs = "pairs with {0}", "{0} ile uyumlu";
     // `ReasonPairs` when Hexsight has no name for the partner augment.
