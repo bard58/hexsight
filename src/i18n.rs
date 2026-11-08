@@ -157,7 +157,7 @@ table! {
     DataToday = "Today", "Bugün";
     DataYesterday = "Yesterday", "Dün";
     LoadingData = "Loading data…", "Veriler yükleniyor…";
-    ReloadData = "Download the data again", "Verileri yeniden indir";
+    ReloadData = "Reload data", "Verileri yeniden indir";
     NoDataChampion = "No data for this champion", "Bu şampiyon için veri yok";
     NoBuildData = "No build data", "Dizilim verisi yok";
 
@@ -323,26 +323,30 @@ table! {
     SettingsTitle = "Settings", "Ayarlar";
     GroupGeneral = "General", "Genel";
     GroupOverlay = "Overlay", "Panel";
-    GroupBuild = "Build", "Dizilim";
-    GroupCardReading = "Card reading", "Kart okuma";
+    // One group for the build and the tips. The marks of the cards have a group of their own, off by default.
+    GroupBuildTips = "Build and tips", "Dizilim ve öneriler";
+    GroupMarks = "Card marks (all off by default)", "Kart işaretleri (varsayılan kapalı)";
+    GroupAdvanced = "Advanced", "Gelişmiş";
     GroupAbout = "About", "Hakkında";
-    SetAutoOverlay = "Show the overlay when a game starts", "Oyun başladığında paneli göster";
-    // The three marks (the top tier, the pairs and the fit) are off by default. One note covers all three.
-    SetTopHighlight = "Highlight top-tier cards", "En üst kademedeki kartları vurgula";
+    SetAutoOverlay = "Show overlay when a game starts", "Oyun başlayınca paneli göster";
+    // The marks of the cards (the top tier, the pairs, the fit and the badges) are off by default. The title of their group says it.
+    SetTopHighlight = "Highlight top-tier cards", "En üst kademeyi vurgula";
     SetPairHints = "Show pair hints", "Eşleşme ipuçlarını göster";
-    SetMarksNote = "Off by default. Turn them on for extra marks on pick screens.",
-        "Varsayılan olarak kapalı. Açarsan seçim ekranında ek işaretler görünür.";
     // The English texts say "overlay" (the Turkish ones say "panel").
-    SetHideInCaptures = "Hide the overlay from recordings and screenshots", "Paneli ekran kayıtlarından ve ekran görüntülerinden gizle";
-    SetHideInCapturesNote = "Turn it off to show the overlay in streams. Hexsight then skips the overlay text when it reads cards.",
-        "Kapatırsan panel yayınlarda görünür. Hexsight kartları okurken panelin yazısını atlar.";
-    SetBadges = "Show badges on augment cards (beta)", "Kartlara kademe rozeti ekle (beta)";
+    SetHideInCaptures = "Hide from recordings", "Kayıtlarda paneli gizle";
+    SetHideInCapturesNote = "Hide the overlay from recordings and screenshots. Turn it off to show it in streams. Hexsight then skips the overlay text when it reads cards.",
+        "Panel ekran kaydında ve ekran görüntüsünde görünmez. Kapatırsan yayınlarda görünür; Hexsight kartları okurken panelin yazısını atlar.";
+    SetBadges = "Tier badges on cards (beta)", "Kartlarda kademe rozeti (beta)";
     SetBadgesNote = "A separate window shows a tier badge and game count above each augment card. It does not show in recordings or screenshots.",
         "Oyun üzerindeki ayrı bir pencere, her kartın üstüne kademe rozeti ve maç sayısı ekler. Bu pencere ekran kayıtlarında ve ekran görüntülerinde görünmez.";
-    SetResetOverlay = "Reset overlay position", "Panelin konumunu sıfırla";
-    SetItemSets = "Send the build to the in-game shop", "Dizilimi oyun içi mağazaya gönder";
+    SetResetOverlay = "Reset", "Sıfırla";
+    SetResetOverlayTip = "Reset overlay position", "Panelin konumunu sıfırla";
+    SetItemSets = "Send build to the in-game shop", "Dizilimi mağazaya gönder";
+    SetItemSetsTip = "Writes your build as item sets in champ select, so the in-game shop shows it.",
+        "Dizilimini eşya seti olarak yazar, oyun içi mağazada görürsün.";
     SetLanguage = "Language", "Dil";
-    SetAutostart = "Start with Windows in the background", "Windows açılınca arka planda başlat";
+    SetAutostart = "Start with Windows", "Windows ile başlat";
+    SetAutostartTip = "Starts in the background, without a window.", "Arka planda, pencere açmadan başlar.";
     // The size of the overlay: three steps.
     OverlaySize = "Overlay size", "Panel boyutu";
     SizeSmall = "Small", "Küçük";
@@ -353,10 +357,12 @@ table! {
     LangTurkish = "Türkçe", "Türkçe";
 
     // ---- Settings: hotkeys
-    HotOverlay = "Show or hide the overlay", "Paneli göster veya gizle";
-    HotUnlock = "Unlock the overlay to move it", "Paneli taşımak için kilidini aç";
+    HotOverlay = "Show/hide overlay", "Paneli göster/gizle";
+    HotUnlock = "Move overlay", "Paneli taşı";
+    HotUnlockTip = "Unlock the overlay to move it", "Paneli taşımak için kilidini aç";
     HotScan = "Read the cards now", "Kartları şimdi oku";
     HotChange = "Change", "Değiştir";
+    HotChangeTip = "Click to change", "Değiştirmek için tıkla";
     HotCancel = "Cancel", "İptal";
     HotPress = "Press a key", "Bir tuşa bas";
     HotNoteWaiting = "Press F1–F12, a letter, or a number. Press Esc to cancel.",
@@ -440,10 +446,10 @@ table! {
     SetUpdateCheck = "Check for new versions", "Yeni sürüm var mı diye bak";
     SetUpdateCheckNote = "At most once a day, Hexsight asks GitHub for the number of the latest version. It sends nothing else.",
         "Hexsight en fazla günde bir kez GitHub’dan son sürümün numarasını sorar. Başka bir şey göndermez.";
-    SendFeedback = "Send feedback", "Geri bildirim gönder";
+    SendFeedback = "Send feedback", "Geri bildirim";
     SendFeedbackNote = "Opens a new GitHub page. Your Hexsight version, Windows version and main settings fill in the text. It holds no Riot ID and no file paths.",
         "GitHub’da yeni bir sayfa açar. Hexsight sürümün, Windows sürümün ve ana ayarların metne yazılır. Riot kimliğin ve dosya yolların yazılmaz.";
-    OpenDataFolder = "Open the data folder", "Veri klasörünü aç";
+    OpenDataFolder = "Open data folder", "Veri klasörünü aç";
     OcrUnavailable = "Card reading isn't working. Add English (United States) to Windows: Settings > Time & language > Language & region.", "Kart okuma çalışmıyor. Windows’a İngilizce (ABD) dilini ekle: Ayarlar > Saat ve dil > Dil ve bölge.";
     // The card reader gave up on a pick screen: it found no cards before the time ran out.
     OcrGaveUp = "Hexsight could not read the cards of this pick. Next time, press the “Read the cards now” key while the cards show.",
@@ -561,12 +567,11 @@ table! {
     CtxTanks = "Tanks", "Tanklar";
     CtxTip = "Estimated from the enemy champions and their items. Hexsight's own rule, not statistics.",
         "Düşman şampiyonlara ve eşyalarına bakılarak tahmin edilir. Hexsight’ın kendi kuralı, istatistik değil.";
-    GroupSuggest = "Suggestions", "Öneriler";
     SetSuggestItems = "Suggest the next items", "Sonraki eşyaları öner";
     SetSuggestContext = "Show the game summary", "Maç özetini göster";
     SetSuggestNote = "Tips come from build data and Hexsight's own rules, never from win rates. You decide: Hexsight buys and picks nothing.",
         "Öneriler dizilim verisinden ve Hexsight’ın kendi kurallarından gelir, kazanma oranından gelmez. Karar senin: Hexsight eşya almaz, seçim yapmaz.";
-    SetFitMarks = "Mark augments that fit your build", "Dizilimine uyan eklentileri işaretle";
+    SetFitMarks = "Mark augments that fit build", "Dizilime uyan eklentileri işaretle";
     FitMark = "fits", "uyar";
     FitLine = "Fits your build: {0}", "Dizilimine uyar: {0}";
     FitTip = "This augment is tied to an item in your build. Hexsight's own rule, not statistics.", "Bu eklenti dizilimindeki bir eşyaya bağlı. Hexsight’ın kendi kuralı, istatistik değil.";

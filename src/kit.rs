@@ -152,6 +152,16 @@ fn toggle_row_height(text_h: f32) -> f32 {
 /// target, not only the switch: a click on the label flips it too. On hover the
 /// row gets a light fill that reaches 6 points past the row on both sides.
 pub fn toggle(ui: &mut Ui, on: &mut bool, label: &str) -> bool {
+    toggle_row(ui, on, label, None)
+}
+
+/// A toggle row with a hover tip. The tip holds the note that used to sit under the row, so the
+/// row keeps one line. The behavior is the same as `toggle`.
+pub fn toggle_tip(ui: &mut Ui, on: &mut bool, label: &str, tip: &str) -> bool {
+    toggle_row(ui, on, label, Some(tip))
+}
+
+fn toggle_row(ui: &mut Ui, on: &mut bool, label: &str, tip: Option<&str>) -> bool {
     let mut changed = false;
     // The label takes the room that the switch leaves. A long label wraps to a
     // second line in a narrow window, and the row grows with it.
@@ -205,6 +215,9 @@ pub fn toggle(ui: &mut Ui, on: &mut bool, label: &str) -> bool {
         Color32::from_black_alpha(50),
     );
     p.circle_filled(pos2(cx, track.center().y), knob, Color32::WHITE);
+    if let Some(tip) = tip {
+        resp.on_hover_text(tip);
+    }
     changed
 }
 
@@ -989,6 +1002,100 @@ mod tests {
             .expect("a track");
         // Press and release in the empty middle of the row: not on the label and not on the switch.
         let at = pos2(track.left() - 60.0, track.center().y);
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&ctx, vec![egui::Event::PointerMoved(at)], &mut row);
+        frame(&ctx, vec![button(true)], &mut row);
+        frame(&ctx, vec![button(false)], &mut row);
+        frame(&ctx, vec![], &mut row);
+        assert_eq!(changes, 1);
+        assert!(on);
+    }
+
+    /// The texts of the shapes of a frame, the tooltip layer included.
+    fn texts_of(shapes: &[egui::Shape]) -> Vec<String> {
+        shapes
+            .iter()
+            .filter_map(|s| match s {
+                egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_toggle_with_a_tip_shows_the_tip_on_a_hover_and_keeps_the_size_of_the_row() {
+        let ctx = egui::Context::default();
+        theme::setup(&ctx);
+        // The tip shows at once, so the test does not wait for it.
+        ctx.all_styles_mut(|s| s.interaction.tooltip_delay = 0.0);
+        let (mut with_tip, mut plain) = (false, false);
+        let (tip_h, plain_h) = (std::cell::Cell::new(0.0f32), std::cell::Cell::new(0.0f32));
+        let mut row = |ui: &mut Ui| {
+            let top = ui.cursor().top();
+            toggle_tip(ui, &mut with_tip, "Label", "The note of the row.");
+            tip_h.set(ui.cursor().top() - top);
+            let top = ui.cursor().top();
+            toggle(ui, &mut plain, "Plain");
+            plain_h.set(ui.cursor().top() - top);
+        };
+        // No hover: no tip.
+        let shapes = frame(&ctx, vec![], &mut row);
+        assert!(!texts_of(&shapes).iter().any(|t| t.contains("note")));
+        // The row with a tip is as high as a plain row.
+        assert_eq!(tip_h.get(), plain_h.get());
+        let label = shapes
+            .iter()
+            .find_map(|s| match s {
+                egui::Shape::Text(t) if t.galley.text() == "Label" => Some(t.pos),
+                _ => None,
+            })
+            .expect("the label");
+        let at = label + vec2(4.0, 4.0);
+        let mut shapes = frame(&ctx, vec![egui::Event::PointerMoved(at)], &mut row);
+        for _ in 0..4 {
+            shapes = frame(&ctx, vec![], &mut row);
+        }
+        assert!(
+            texts_of(&shapes)
+                .iter()
+                .any(|t| t == "The note of the row."),
+            "{:?}",
+            texts_of(&shapes)
+        );
+        // A hover on the plain row shows no tip.
+        let plain_at = label + vec2(4.0, 4.0 + tip_h.get() + 2.0);
+        frame(&ctx, vec![egui::Event::PointerMoved(plain_at)], &mut row);
+        let mut shapes = Vec::new();
+        for _ in 0..4 {
+            shapes = frame(&ctx, vec![], &mut row);
+        }
+        assert!(!texts_of(&shapes).iter().any(|t| t.contains("note of")));
+    }
+
+    #[test]
+    fn a_click_on_a_toggle_with_a_tip_flips_it_like_a_plain_toggle() {
+        let ctx = egui::Context::default();
+        theme::setup(&ctx);
+        let (mut on, mut changes) = (false, 0);
+        let mut row = |ui: &mut Ui| {
+            if toggle_tip(ui, &mut on, "Label", "Tip") {
+                changes += 1;
+            }
+        };
+        let shapes = frame(&ctx, vec![], &mut row);
+        let track = shapes
+            .iter()
+            .find_map(|s| match s {
+                egui::Shape::Rect(r) if (r.rect.width() - SWITCH_W).abs() < 0.01 => Some(r.rect),
+                _ => None,
+            })
+            .expect("a track");
+        let at = track.center();
         let button = |pressed| egui::Event::PointerButton {
             pos: at,
             button: egui::PointerButton::Primary,

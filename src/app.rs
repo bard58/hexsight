@@ -610,6 +610,8 @@ pub struct App {
     debug_trade: Option<(TradeCall, i64, f32)>,
     /// The card reading tools of the Settings page are open.
     tools_open: bool,
+    /// The About text of the Settings page is open. It starts closed in each run and is not saved.
+    about_open: bool,
     /// The last click on the button "Fix". See `FIX_PAUSE`.
     fix_clicked: Option<std::time::Instant>,
     /// The id of the newest saved game while no game ended. After a game, a newer
@@ -1855,6 +1857,37 @@ fn trade_button(ui: &mut Ui, size: Vec2, text: &str, color: Color32, on: bool) -
     block_button(ui, size, look).clicked() && on
 }
 
+/// The title of a fold in the Settings page: the text at the left, a chevron at the right, 28
+/// points high. Returns true on a click. The caller flips the open state.
+fn fold_header(ui: &mut Ui, text: &str, open: bool) -> bool {
+    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::click());
+    let p = ui.painter();
+    p.text(
+        r.left_center(),
+        Align2::LEFT_CENTER,
+        text,
+        FontId::proportional(13.5),
+        LABEL,
+    );
+    let arrow = if open {
+        glyph::CHEVRON_UP
+    } else {
+        glyph::CHEVRON_DOWN
+    };
+    p.text(
+        r.right_center(),
+        Align2::RIGHT_CENTER,
+        arrow,
+        FontId::new(11.0, icons()),
+        LABEL_3,
+    );
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, text));
+    resp.clicked()
+}
+
 /// The width of a keycap with this text: the key of a hotkey row, in points.
 fn keycap_width(ui: &Ui, text: &str) -> f32 {
     ui.painter()
@@ -1868,6 +1901,20 @@ fn keycap_width(ui: &Ui, text: &str) -> f32 {
 /// semibold, so it does not look like the button "Change" beside it. While the row waits
 /// for a new key (`waiting`), the edge and the text are orange.
 fn keycap(ui: &mut Ui, text: &str, waiting: bool) -> egui::Response {
+    keycap_sense(ui, text, waiting, Sense::hover())
+}
+
+/// A keycap that is a button: the same look, a click answers, and the pointer is a hand.
+fn keycap_button(ui: &mut Ui, text: &str, waiting: bool) -> egui::Response {
+    let resp = keycap_sense(ui, text, waiting, Sense::click());
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, text));
+    resp
+}
+
+fn keycap_sense(ui: &mut Ui, text: &str, waiting: bool, sense: Sense) -> egui::Response {
     let (ink, edge) = if waiting {
         (ORANGE, ORANGE)
     } else {
@@ -1876,8 +1923,7 @@ fn keycap(ui: &mut Ui, text: &str, waiting: bool) -> egui::Response {
     let g = ui
         .painter()
         .layout_no_wrap(text.to_string(), FontId::new(12.0, semibold()), ink);
-    let (rect, resp) =
-        ui.allocate_exact_size(vec2(g.size().x + 16.0, g.size().y + 8.0), Sense::hover());
+    let (rect, resp) = ui.allocate_exact_size(vec2(g.size().x + 16.0, g.size().y + 8.0), sense);
     ui.painter().rect_stroke(
         rect,
         CornerRadius::same(6),
@@ -2843,6 +2889,7 @@ impl App {
                 .ok()
                 .and_then(|s| parse_debug_trade(&s)),
             tools_open: false,
+            about_open: false,
             fix_clicked: None,
             seen_game,
             advice_seen: None,
@@ -5873,9 +5920,9 @@ impl App {
         }
     }
 
-    /// One hotkey row: what it does, its key, and the button "Change". While
-    /// the page waits for a new key, the row shows "Push a key" and the button
-    /// says "Cancel".
+    /// One hotkey row: what it does, and its key as a keycap. The keycap is the button: a click
+    /// on it waits for a new key, and a second click cancels. While the page waits, the keycap
+    /// says "Press a key" in orange.
     fn hotkey_row(&mut self, ui: &mut Ui, what: &str, which: Hotkey) {
         let lang = self.lang;
         let key = if which == Hotkey::Overlay {
@@ -5884,22 +5931,14 @@ impl App {
             self.settings.scan_key
         };
         let waiting = self.rebinding.is_some_and(|(w, _)| w == which);
-        let button = lang.t(if waiting {
-            Key::HotCancel
-        } else {
-            Key::HotChange
-        });
         let shown = if waiting {
             lang.t(Key::HotPress).to_string()
         } else {
             key_text(lang, key)
         };
-        // The button and the key keep their size. The label takes the room that is left, and a
-        // long label wraps to a second line (in a narrow window, or while the row waits for a key).
-        let right = kit::accent_button_width(ui, button)
-            + keycap_width(ui, &shown)
-            + 2.0 * ui.spacing().item_spacing.x;
-        let room = (ui.available_width() - right).max(60.0);
+        // The key keeps its size. The label takes the room that is left, and a long label wraps to a second line.
+        let room = (ui.available_width() - keycap_width(ui, &shown) - ui.spacing().item_spacing.x)
+            .max(60.0);
         let lines = ui
             .painter()
             .layout(what.to_string(), FontId::proportional(13.5), LABEL, room);
@@ -5913,32 +5952,45 @@ impl App {
                     ui.add(egui::Label::new(body(what)).wrap());
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if kit::accent_button(ui, button, SURFACE_3).clicked() {
+                    let tip = lang.t(if waiting {
+                        Key::HotCancel
+                    } else {
+                        Key::HotChangeTip
+                    });
+                    if keycap_button(ui, &shown, waiting)
+                        .on_hover_text(tip)
+                        .clicked()
+                    {
                         self.set_rebinding((!waiting).then_some(which));
                         // The page wakes up at the end of the wait.
                         ui.ctx().request_repaint_after(
                             REBIND_WAIT + std::time::Duration::from_millis(100),
                         );
                     }
-                    keycap(ui, &shown, waiting);
                 });
             },
         );
     }
 
-    /// The row of the unlock key: what it does, and the key as a keycap ("Ctrl + F8"). The
-    /// key is the overlay key with Ctrl, so the row has no button: change the overlay key above.
-    fn unlock_row(&self, ui: &mut Ui) {
+    /// The row that moves the overlay: the label, the unlock key as a keycap ("Ctrl + F8"), and the
+    /// small button "Reset" that puts the overlay back in its place. The key is the overlay key with
+    /// Ctrl, so the keycap has no button: change the overlay key above. Both have a tip. Returns
+    /// true when "Reset" was clicked.
+    fn unlock_row(&self, ui: &mut Ui) -> bool {
         let lang = self.lang;
         let what = lang.t(Key::HotUnlock);
         let key = format!("Ctrl + {}", key_text(lang, self.settings.overlay_key));
-        // The label takes the room that the key leaves, and a long label wraps to a second line.
-        let room =
-            (ui.available_width() - keycap_width(ui, &key) - ui.spacing().item_spacing.x).max(60.0);
+        let reset = lang.t(Key::SetResetOverlay);
+        // The key and the button keep their size. The label takes the room that is left.
+        let right = keycap_width(ui, &key)
+            + kit::accent_button_width(ui, reset)
+            + 2.0 * ui.spacing().item_spacing.x;
+        let room = (ui.available_width() - right).max(60.0);
         let lines = ui
             .painter()
             .layout(what.to_string(), FontId::proportional(13.5), LABEL, room);
         let row = vec2(ui.available_width(), lines.size().y.max(26.0));
+        let mut clicked = false;
         ui.allocate_ui_with_layout(
             row,
             egui::Layout::left_to_right(egui::Align::Center),
@@ -5948,15 +6000,21 @@ impl App {
                     ui.add(egui::Label::new(body(what)).wrap());
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    keycap(ui, &key, false);
+                    clicked = kit::accent_button(ui, reset, SURFACE_3)
+                        .on_hover_text(lang.t(Key::SetResetOverlayTip))
+                        .clicked();
+                    keycap(ui, &key, false).on_hover_text(lang.t(Key::HotUnlockTip));
                 });
             },
         );
+        clicked
     }
 
-    /// Settings: a warning when the card reader cannot work, language, start with
-    /// Windows, the overlay (its marks, its keys, its size and place, the beta badges),
-    /// the item sets, the card reading tools (folded), and About (with "Quit Hexsight").
+    /// Settings: a warning when the card reader cannot work, General (language, start with
+    /// Windows, the update check), the overlay (its switches, its keys, its size and place), the
+    /// card marks (all off by default), the build and the tips, and one group with the folded
+    /// Advanced tools, the folded About text, and the buttons "Send feedback" and "Quit Hexsight".
+    /// A note that explains one switch is the tip of its row, so the page stays short.
     fn settings_ui(&mut self, ui: &mut Ui, v: &View) {
         let lang = self.lang;
         let mut changed = false;
@@ -6000,7 +6058,12 @@ impl App {
                         });
                     });
                     kit::hairline(ui, 0.0);
-                    if kit::toggle(ui, &mut self.autostart, lang.t(Key::SetAutostart)) {
+                    if kit::toggle_tip(
+                        ui,
+                        &mut self.autostart,
+                        lang.t(Key::SetAutostart),
+                        lang.t(Key::SetAutostartTip),
+                    ) {
                         if !crate::win::set_autostart(self.autostart) {
                             self.autostart = crate::win::autostart_enabled();
                         }
@@ -6008,6 +6071,13 @@ impl App {
                         self.settings.autostart_asked = true;
                         changed = true;
                     }
+                    kit::hairline(ui, 0.0);
+                    changed |= kit::toggle_tip(
+                        ui,
+                        &mut self.settings.check_updates,
+                        lang.t(Key::SetUpdateCheck),
+                        lang.t(Key::SetUpdateCheckNote),
+                    );
                 });
 
                 kit::section(ui, &lang.upper(lang.t(Key::GroupOverlay)));
@@ -6021,34 +6091,15 @@ impl App {
                     // The switch says "hide", and the setting says "show in captures": they are opposites.
                     // The new value works from the next time the panel opens (`set_overlay`).
                     let mut hide = !self.settings.overlay_in_captures;
-                    if kit::toggle(ui, &mut hide, lang.t(Key::SetHideInCaptures)) {
+                    if kit::toggle_tip(
+                        ui,
+                        &mut hide,
+                        lang.t(Key::SetHideInCaptures),
+                        lang.t(Key::SetHideInCapturesNote),
+                    ) {
                         self.settings.overlay_in_captures = !hide;
                         changed = true;
                     }
-                    ui.add(egui::Label::new(caption(lang.t(Key::SetHideInCapturesNote))).wrap());
-                    kit::hairline(ui, 0.0);
-                    // Both marks are off by default: Riot's rules for third-party apps. One note covers the two.
-                    changed |= kit::toggle(
-                        ui,
-                        &mut self.settings.top_highlight,
-                        lang.t(Key::SetTopHighlight),
-                    );
-                    kit::hairline(ui, 0.0);
-                    changed |=
-                        kit::toggle(ui, &mut self.settings.pair_hints, lang.t(Key::SetPairHints));
-                    kit::hairline(ui, 0.0);
-                    changed |=
-                        kit::toggle(ui, &mut self.settings.fit_marks, lang.t(Key::SetFitMarks));
-                    ui.add(egui::Label::new(caption(lang.t(Key::SetMarksNote))).wrap());
-                    kit::hairline(ui, 0.0);
-                    self.hotkey_row(ui, lang.t(Key::HotOverlay), Hotkey::Overlay);
-                    kit::hairline(ui, 0.0);
-                    self.hotkey_row(ui, lang.t(Key::HotScan), Hotkey::Scan);
-                    if self.rebinding.is_some() {
-                        ui.add(egui::Label::new(caption(lang.t(Key::HotNoteWaiting))).wrap());
-                    }
-                    kit::hairline(ui, 0.0);
-                    self.unlock_row(ui);
                     kit::hairline(ui, 0.0);
                     // The size of the overlay: three steps. It applies the next time the overlay opens.
                     ui.horizontal(|ui| {
@@ -6072,19 +6123,52 @@ impl App {
                         });
                     });
                     kit::hairline(ui, 0.0);
-                    if kit::accent_button(ui, lang.t(Key::SetResetOverlay), SURFACE_3).clicked() {
+                    self.hotkey_row(ui, lang.t(Key::HotOverlay), Hotkey::Overlay);
+                    kit::hairline(ui, 0.0);
+                    self.hotkey_row(ui, lang.t(Key::HotScan), Hotkey::Scan);
+                    if self.rebinding.is_some() {
+                        ui.add(egui::Label::new(caption(lang.t(Key::HotNoteWaiting))).wrap());
+                    }
+                    kit::hairline(ui, 0.0);
+                    if self.unlock_row(ui) {
                         self.settings.overlay_pos = None;
                         changed = true;
                     }
-                    kit::hairline(ui, 0.0);
-                    changed |=
-                        kit::toggle(ui, &mut self.settings.card_badges, lang.t(Key::SetBadges));
-                    ui.add(egui::Label::new(caption(lang.t(Key::SetBadgesNote))).wrap());
                 });
 
-                kit::section(ui, &lang.upper(lang.t(Key::GroupBuild)));
+                // The marks of the cards are off by default (Riot's rules for third-party apps). The title says it.
+                kit::section(ui, &lang.upper(lang.t(Key::GroupMarks)));
                 kit::group(ui, |ui| {
-                    if kit::toggle(ui, &mut self.settings.item_sets, lang.t(Key::SetItemSets)) {
+                    changed |= kit::toggle(
+                        ui,
+                        &mut self.settings.top_highlight,
+                        lang.t(Key::SetTopHighlight),
+                    );
+                    kit::hairline(ui, 0.0);
+                    changed |=
+                        kit::toggle(ui, &mut self.settings.pair_hints, lang.t(Key::SetPairHints));
+                    kit::hairline(ui, 0.0);
+                    changed |=
+                        kit::toggle(ui, &mut self.settings.fit_marks, lang.t(Key::SetFitMarks));
+                    kit::hairline(ui, 0.0);
+                    changed |= kit::toggle_tip(
+                        ui,
+                        &mut self.settings.card_badges,
+                        lang.t(Key::SetBadges),
+                        lang.t(Key::SetBadgesNote),
+                    );
+                });
+
+                // The build and the tips of the game: the next items and the summary. The tips are on by default.
+                // They suggest, and the player decides.
+                kit::section(ui, &lang.upper(lang.t(Key::GroupBuildTips)));
+                kit::group(ui, |ui| {
+                    if kit::toggle_tip(
+                        ui,
+                        &mut self.settings.item_sets,
+                        lang.t(Key::SetItemSets),
+                        lang.t(Key::SetItemSetsTip),
+                    ) {
                         if self.settings.item_sets {
                             // Write the sets again in the next champ select.
                             self.item_set_for = None;
@@ -6095,42 +6179,27 @@ impl App {
                         }
                         changed = true;
                     }
-                });
-
-                // The tips of the game: the next items and the summary. Both are on by default. They suggest, and the player decides.
-                kit::section(ui, &lang.upper(lang.t(Key::GroupSuggest)));
-                kit::group(ui, |ui| {
-                    changed |= kit::toggle(
+                    kit::hairline(ui, 0.0);
+                    changed |= kit::toggle_tip(
                         ui,
                         &mut self.settings.suggest_items,
                         lang.t(Key::SetSuggestItems),
+                        lang.t(Key::SetSuggestNote),
                     );
                     kit::hairline(ui, 0.0);
-                    changed |= kit::toggle(
+                    changed |= kit::toggle_tip(
                         ui,
                         &mut self.settings.suggest_context,
                         lang.t(Key::SetSuggestContext),
+                        lang.t(Key::SetSuggestNote),
                     );
-                    ui.add(egui::Label::new(caption(lang.t(Key::SetSuggestNote))).wrap());
                 });
 
                 ui.add_space(8.0);
                 kit::group(ui, |ui| {
                     self.tools_ui(ui, v);
-                });
-
-                kit::section(ui, &lang.upper(lang.t(Key::GroupAbout)));
-                kit::group(ui, |ui| {
-                    ui.add(egui::Label::new(caption(lang.t(Key::AboutText))).wrap());
-                    // Where the games are kept: the My games page used to say it under the list.
-                    ui.add_space(4.0);
-                    ui.add(egui::Label::new(caption(lang.t(Key::GamesSavedNote))).wrap());
-                    if let Some(key) = portable_line(crate::cache::place()) {
-                        ui.add_space(4.0);
-                        ui.add(egui::Label::new(caption(lang.t(key))).wrap());
-                    }
-                    ui.add_space(4.0);
-                    ui.add(egui::Label::new(caption(lang.t(Key::AboutRiot)).size(10.5)).wrap());
+                    kit::hairline(ui, 0.0);
+                    self.about_ui(ui);
                     if let Some(n) = v.note {
                         ui.add(
                             egui::Label::new(
@@ -6139,16 +6208,6 @@ impl App {
                             .wrap(),
                         );
                     }
-                    ui.add_space(6.0);
-                    kit::hairline(ui, 0.0);
-                    if kit::toggle(
-                        ui,
-                        &mut self.settings.check_updates,
-                        lang.t(Key::SetUpdateCheck),
-                    ) {
-                        changed = true;
-                    }
-                    ui.add(egui::Label::new(caption(lang.t(Key::SetUpdateCheckNote))).wrap());
                     // A newer version: a link to the download page.
                     if let Some(tag) = &v.update {
                         ui.add_space(4.0);
@@ -6177,15 +6236,6 @@ impl App {
                             );
                             open_url(&update::issue_url(update::REPO, &feedback));
                         }
-                        if kit::accent_button(ui, lang.t(Key::OpenDataFolder), SURFACE_3).clicked()
-                        {
-                            let _ = std::process::Command::new("explorer")
-                                .arg(crate::cache::app_dir())
-                                .spawn();
-                        }
-                        if kit::accent_button(ui, lang.t(Key::ReloadData), SURFACE_3).clicked() {
-                            let _ = self.h.cmd.send(Cmd::Reload);
-                        }
                         // The X of the window only hides it, so this is the way to end Hexsight.
                         quit = kit::accent_button(ui, lang.t(Key::QuitApp), BLUE).clicked();
                     });
@@ -6200,6 +6250,33 @@ impl App {
             self.settings.save();
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
+    }
+
+    /// The About text, folded under its title: the data sources and what Hexsight never does, where
+    /// the games are kept, the portable line, what the update check sends, and the Riot disclaimer.
+    /// It starts closed in each run.
+    fn about_ui(&mut self, ui: &mut Ui) {
+        let lang = self.lang;
+        if fold_header(ui, lang.t(Key::GroupAbout), self.about_open) {
+            self.about_open = !self.about_open;
+        }
+        if !self.about_open {
+            return;
+        }
+        ui.add_space(4.0);
+        ui.add(egui::Label::new(caption(lang.t(Key::AboutText))).wrap());
+        // Where the games are kept: the My games page used to say it under the list.
+        ui.add_space(4.0);
+        ui.add(egui::Label::new(caption(lang.t(Key::GamesSavedNote))).wrap());
+        if let Some(key) = portable_line(crate::cache::place()) {
+            ui.add_space(4.0);
+            ui.add(egui::Label::new(caption(lang.t(key))).wrap());
+        }
+        ui.add_space(4.0);
+        ui.add(egui::Label::new(caption(lang.t(Key::SetUpdateCheckNote))).wrap());
+        ui.add_space(4.0);
+        ui.add(egui::Label::new(caption(lang.t(Key::AboutRiot)).size(10.5)).wrap());
+        ui.add_space(4.0);
     }
 
     /// A warning where the player looks: a black or frozen capture, or League in
@@ -6239,31 +6316,7 @@ impl App {
     /// rows about the overlay (the unlock key, its place, the badges) are in the Overlay group.
     fn tools_ui(&mut self, ui: &mut Ui, v: &View) {
         let lang = self.lang;
-        let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::click());
-        let p = ui.painter();
-        p.text(
-            r.left_center(),
-            Align2::LEFT_CENTER,
-            lang.t(Key::GroupCardReading),
-            FontId::proportional(13.5),
-            LABEL,
-        );
-        let arrow = if self.tools_open {
-            glyph::CHEVRON_UP
-        } else {
-            glyph::CHEVRON_DOWN
-        };
-        p.text(
-            r.right_center(),
-            Align2::RIGHT_CENTER,
-            arrow,
-            FontId::new(11.0, icons()),
-            LABEL_3,
-        );
-        if resp.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        }
-        if resp.clicked() {
+        if fold_header(ui, lang.t(Key::GroupAdvanced), self.tools_open) {
             self.tools_open = !self.tools_open;
         }
         if !self.tools_open {
@@ -6312,6 +6365,18 @@ impl App {
             self.h.shared.lock().unwrap().say(msg);
         }
         ui.add(egui::Label::new(caption(lang.t(Key::SaveScanNote))).wrap());
+        // Rare support actions: the data folder and a new download of the data.
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            if kit::accent_button(ui, lang.t(Key::OpenDataFolder), SURFACE_3).clicked() {
+                let _ = std::process::Command::new("explorer")
+                    .arg(crate::cache::app_dir())
+                    .spawn();
+            }
+            if kit::accent_button(ui, lang.t(Key::ReloadData), SURFACE_3).clicked() {
+                let _ = self.h.cmd.send(Cmd::Reload);
+            }
+        });
     }
 }
 
@@ -10411,43 +10476,92 @@ mod tests {
         }
     }
 
+    /// The number of lines that a label takes in `room` points.
+    fn label_rows(ctx: &egui::Context, text: &str, font: FontId, room: f32) -> usize {
+        let mut rows = 0;
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 600.0))),
+            ..Default::default()
+        };
+        ctx.run_ui(input, |ui| {
+            rows = ui
+                .painter()
+                .layout(text.to_string(), font.clone(), LABEL, room)
+                .rows
+                .len()
+        })
+        .drop_without_applying_deltas();
+        rows
+    }
+
     #[test]
-    fn a_settings_row_keeps_its_label_beside_the_switch() {
+    fn a_settings_row_keeps_its_label_on_one_line_beside_the_switch_or_the_key() {
         let ctx = egui::Context::default();
         theme::setup(&ctx);
-        // The hotkey rows: the label, the key and the button share the 246 points of a card (`CARD_INNER`).
-        // The label wraps to a second line when it needs to (see `hotkey_row`), never a third.
+        let button = |lang: Lang, key: Key| {
+            text_width(&ctx, lang.t(key), FontId::new(12.5, semibold())) + 24.0
+        };
         for lang in [Lang::En, Lang::Tr] {
+            // The hotkey rows: the label and the keycap share the 246 points of a card (`CARD_INNER`).
+            // The keycap is the widest while it waits: "Press a key". The label stays on one line.
             for key in [Key::HotOverlay, Key::HotScan] {
-                let right = text_width(&ctx, "F12", FontId::new(12.0, semibold()))
-                    + 16.0
-                    + [Key::HotChange, Key::HotCancel]
-                        .iter()
-                        .map(|k| text_width(&ctx, lang.t(*k), FontId::new(12.5, semibold())) + 24.0)
-                        .fold(0.0, f32::max)
-                    + 16.0;
-                let room = CARD_INNER - right;
-                let mut rows = 0;
-                let input = egui::RawInput {
-                    screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 600.0))),
-                    ..Default::default()
-                };
-                ctx.run_ui(input, |ui| {
-                    rows = ui
-                        .painter()
-                        .layout(
-                            lang.t(key).to_string(),
-                            FontId::proportional(13.5),
-                            LABEL,
-                            room,
-                        )
-                        .rows
-                        .len()
-                })
-                .drop_without_applying_deltas();
-                assert!(
-                    rows <= 2,
+                let widest = ["F12", lang.t(Key::HotPress)]
+                    .iter()
+                    .map(|t| text_width(&ctx, t, FontId::new(12.0, semibold())) + 16.0)
+                    .fold(0.0, f32::max);
+                let room = CARD_INNER - widest - 8.0;
+                let rows = label_rows(&ctx, lang.t(key), FontId::proportional(13.5), room);
+                assert_eq!(
+                    rows, 1,
                     "{lang:?} {key:?}: {rows} lines in {room:.1} points"
+                );
+            }
+            // The move row: the label, the keycap "Ctrl + F12" and the small button "Reset".
+            let cap = text_width(&ctx, "Ctrl + F12", FontId::new(12.0, semibold())) + 16.0;
+            let room = CARD_INNER - cap - button(lang, Key::SetResetOverlay) - 16.0;
+            let rows = label_rows(
+                &ctx,
+                lang.t(Key::HotUnlock),
+                FontId::proportional(13.5),
+                room,
+            );
+            assert_eq!(
+                rows, 1,
+                "{lang:?} move row: {rows} lines in {room:.1} points"
+            );
+            // A toggle label has the row without the switch (`kit::SWITCH_W`) and the gap.
+            let room = CARD_INNER - kit::SWITCH_W - 8.0;
+            for key in [
+                Key::SetAutostart,
+                Key::SetUpdateCheck,
+                Key::SetAutoOverlay,
+                Key::SetHideInCaptures,
+                Key::SetTopHighlight,
+                Key::SetPairHints,
+                Key::SetFitMarks,
+                Key::SetBadges,
+                Key::SetItemSets,
+                Key::SetSuggestItems,
+                Key::SetSuggestContext,
+            ] {
+                let rows = label_rows(&ctx, lang.t(key), FontId::proportional(13.0), room);
+                assert_eq!(
+                    rows, 1,
+                    "{lang:?} {key:?}: {rows} lines in {room:.1} points"
+                );
+            }
+            // The two buttons of the page share one row, and the titles of the groups fit the page.
+            let both = button(lang, Key::SendFeedback) + button(lang, Key::QuitApp) + 8.0;
+            assert!(
+                both <= CARD_INNER,
+                "{lang:?}: the two buttons need {both:.1} of {CARD_INNER} points"
+            );
+            for key in [Key::GroupMarks, Key::GroupBuildTips, Key::GroupOverlay] {
+                let title = lang.upper(lang.t(key));
+                let w = text_width(&ctx, &title, FontId::new(11.0, semibold()));
+                assert!(
+                    w <= MAIN_W - 2.0 * MARGIN,
+                    "{lang:?} {title:?}: {w:.1} points"
                 );
             }
         }
@@ -10919,6 +11033,10 @@ mod tests {
         Arc::new((0..n).map(game).collect())
     }
 
+    /// The most points that the Settings page may need with its folds closed (before the compact
+    /// layout: about 1450). The test below measures the page in both languages.
+    const SETTINGS_CLOSED_MAX_H: f32 = 1000.0;
+
     #[test]
     fn the_settings_and_games_pages_never_make_the_window_cut_the_footer() {
         // 200 saved games over 40 champions: My games lists its most played champions.
@@ -10940,11 +11058,14 @@ mod tests {
                         used <= max,
                         "{lang:?} {page:?}, max height {max}: the content needs {used:.1} points, so the window cuts the footer"
                     );
-                    // The Settings page is longer than the tallest window: its list scrolls, and the window is full.
+                    // The Settings page is short with its folds closed: the notes are tips, so it
+                    // needs about one window, not two. A long page would make the owner scroll again.
                     if page == Page::Settings {
+                        let total = used + app.debug_scroll_end.min(10_000.0);
+                        eprintln!("settings page {lang:?} max {max}: {total:.1} points");
                         assert!(
-                            used >= max - 2.0,
-                            "{lang:?} max height {max}: the Settings page uses only {used:.1} points"
+                            total <= SETTINGS_CLOSED_MAX_H,
+                            "{lang:?} max height {max}: the Settings page needs {total:.1} points with its folds closed"
                         );
                     }
                 }
@@ -12244,6 +12365,50 @@ mod tests {
         texts
     }
 
+    /// The texts on screen while the pointer rests on the row of `label` in the Settings page: the
+    /// page and the tip of the row. The page scrolls until it shows the label. None when no scroll
+    /// shows it.
+    fn hover_texts(app: &mut App, v: &View, label: &str) -> Option<Vec<String>> {
+        for scroll in [None, Some(250.0), Some(500.0), Some(750.0), Some(10_000.0)] {
+            let ctx = egui::Context::default();
+            theme::setup(&ctx);
+            // The tip shows at once, so the test does not wait for it.
+            ctx.all_styles_mut(|s| s.interaction.tooltip_delay = 0.0);
+            app.debug_scroll = scroll;
+            let mut at = None;
+            let mut run = |i: usize, events: Vec<egui::Event>| {
+                let input = egui::RawInput {
+                    time: Some(i as f64 / 10.0),
+                    screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(MAIN_W, 680.0))),
+                    events,
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(input, |ui| {
+                    app.window_ui(ui, v);
+                });
+                let shapes = std::mem::take(&mut out.shapes);
+                out.drop_without_applying_deltas();
+                shapes
+            };
+            let mut shapes = Vec::new();
+            for i in 0..6 {
+                shapes = run(i, vec![]);
+            }
+            for (text, rect, _) in painted_boxes(&shapes) {
+                if text == label && rect.bottom() < 640.0 && rect.top() > 60.0 {
+                    at = Some(pos2(rect.left() + 4.0, rect.center().y));
+                }
+            }
+            let Some(at) = at else { continue };
+            run(6, vec![egui::Event::PointerMoved(at)]);
+            for i in 7..12 {
+                shapes = run(i, vec![]);
+            }
+            return Some(painted_text(&shapes));
+        }
+        None
+    }
+
     #[test]
     fn the_fix_button_works_only_with_a_client_and_only_once_in_a_while() {
         use std::time::Duration;
@@ -12689,10 +12854,19 @@ mod tests {
             app.page = Page::Settings;
             let top = window_texts(&mut app, &v, None);
             let has = |texts: &[String], key: Key| texts.iter().any(|t| t == lang.t(key));
+            // The note of the switch is its tip, not a line of the page.
             assert!(
-                has(&top, Key::SetHideInCaptures) && has(&top, Key::SetHideInCapturesNote),
+                has(&top, Key::SetHideInCaptures) && !has(&top, Key::SetHideInCapturesNote),
                 "{lang:?}: {top:?}"
             );
+            let tip = hover_texts(&mut app, &v, lang.t(Key::SetHideInCaptures))
+                .expect("the switch is on screen");
+            assert!(has(&tip, Key::SetHideInCapturesNote), "{lang:?}: {tip:?}");
+            // The update switch is in General, near the top, and its note is its tip.
+            assert!(has(&top, Key::SetUpdateCheck), "{lang:?}: {top:?}");
+            let tip = hover_texts(&mut app, &v, lang.t(Key::SetUpdateCheck))
+                .expect("the switch is on screen");
+            assert!(has(&tip, Key::SetUpdateCheckNote), "{lang:?}: {tip:?}");
             // The switch sits in the Panel group, above the hotkeys.
             let place = |key: Key| top.iter().position(|t| t == lang.t(key));
             assert!(
@@ -12701,12 +12875,14 @@ mod tests {
                 "{lang:?}"
             );
             let end = window_texts(&mut app, &v, Some(10_000.0));
-            for key in [
-                Key::SetUpdateCheck,
-                Key::SetUpdateCheckNote,
-                Key::SendFeedback,
-                Key::OpenDataFolder,
-            ] {
+            for key in [Key::SendFeedback, Key::QuitApp, Key::GroupAbout] {
+                assert!(has(&end, key), "{lang:?} {key:?}: {end:?}");
+            }
+            // The data folder button is in the Advanced fold.
+            assert!(!has(&end, Key::OpenDataFolder), "{lang:?}: {end:?}");
+            app.tools_open = true;
+            let end = window_texts(&mut app, &v, Some(10_000.0));
+            for key in [Key::OpenDataFolder, Key::ReloadData] {
                 assert!(has(&end, key), "{lang:?} {key:?}: {end:?}");
             }
         }
@@ -12776,14 +12952,20 @@ mod tests {
                 .drop_without_applying_deltas();
                 rows
             };
-            // Captions wrap inside the card. The notes stay short.
-            for key in [Key::SetUpdateCheckNote, Key::SetHideInCapturesNote] {
-                assert!(rows(lang.t(key), 11.5) <= 3, "{lang:?} {key:?}");
-            }
+            // The caption in the About fold wraps inside the card. The note stays short.
+            assert!(rows(lang.t(Key::SetUpdateCheckNote), 11.5) <= 3, "{lang:?}");
             assert!(rows(lang.t(Key::SendFeedbackNote), 11.5) <= 4, "{lang:?}");
-            // The switch labels use the room beside the switch (44 points and the gap), in two lines at most.
-            let room = CARD_INNER - 44.0 - 6.0;
-            for key in [Key::SetHideInCaptures, Key::SetUpdateCheck] {
+            // A tip is a tooltip inside the window (the page width, and 8 points of padding on both
+            // sides). It stays short, so it does not cover the page.
+            let tip_room = MAIN_W - 2.0 * MARGIN - 16.0;
+            for key in [
+                Key::SetHideInCapturesNote,
+                Key::SetBadgesNote,
+                Key::SetSuggestNote,
+                Key::SetUpdateCheckNote,
+                Key::SetItemSetsTip,
+                Key::SetAutostartTip,
+            ] {
                 let mut lines = 0;
                 let input = egui::RawInput {
                     screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 600.0))),
@@ -12794,15 +12976,15 @@ mod tests {
                         .painter()
                         .layout(
                             lang.t(key).to_string(),
-                            FontId::proportional(13.5),
+                            FontId::proportional(13.0),
                             LABEL,
-                            room,
+                            tip_room,
                         )
                         .rows
                         .len()
                 })
                 .drop_without_applying_deltas();
-                assert!(lines <= 2, "{lang:?} {key:?}: {lines} lines");
+                assert!(lines <= 6, "{lang:?} {key:?}: {lines} lines");
             }
             // The link line in About fits on one line with a long tag.
             let w = text_width(
@@ -15591,16 +15773,22 @@ mod tests {
                 .flat_map(|scroll| window_texts(&mut app, &v, scroll))
                 .collect();
             for t in [
-                lang.upper(lang.t(Key::GroupSuggest)),
+                lang.upper(lang.t(Key::GroupBuildTips)),
                 lang.t(Key::SetSuggestItems).into(),
                 lang.t(Key::SetSuggestContext).into(),
-                lang.t(Key::SetSuggestNote).into(),
                 lang.t(Key::SetFitMarks).into(),
             ] {
                 assert!(
                     texts.contains(&t),
                     "{lang:?}: {t:?} is missing in {texts:?}"
                 );
+            }
+            // The note of the two tips is the tip of both switches, and it is not a line of the page.
+            let note = lang.t(Key::SetSuggestNote);
+            assert!(!texts.iter().any(|t| t == note), "{lang:?}: {texts:?}");
+            for key in [Key::SetSuggestItems, Key::SetSuggestContext] {
+                let tip = hover_texts(&mut app, &v, lang.t(key)).expect("the switch is on screen");
+                assert!(tip.iter().any(|t| t == note), "{lang:?} {key:?}: {tip:?}");
             }
         }
     }
@@ -17857,8 +18045,8 @@ mod tests {
         for lang in [Lang::En, Lang::Tr] {
             let mut app = test_app(Settings::default(), lang);
             app.page = Page::Settings;
-            // The card reading tools stay folded: the three rows moved to the Overlay group show anyway.
-            assert!(!app.tools_open);
+            // The folds (Advanced and About) start closed in each run.
+            assert!(!app.tools_open && !app.about_open);
             let mut texts: Vec<String> = Vec::new();
             for scroll in [None, Some(250.0), Some(500.0), Some(750.0), Some(10_000.0)] {
                 texts.extend(window_texts(&mut app, &v, scroll));
@@ -17872,18 +18060,50 @@ mod tests {
                 Key::SizeLarge,
                 Key::SetResetOverlay,
                 Key::SetBadges,
-                Key::SetBadgesNote,
+                Key::GroupMarks,
                 Key::QuitApp,
+                Key::GroupAbout,
+            ] {
+                let shown = if key == Key::GroupMarks {
+                    lang.upper(lang.t(key))
+                } else {
+                    lang.t(key).to_string()
+                };
+                assert!(has(&shown), "{lang:?} {key:?}: {texts:?}");
+            }
+            // The notes are tips or sit in the About fold: none is a line of the closed page.
+            for key in [
+                Key::SetBadgesNote,
                 Key::GamesSavedNote,
                 Key::AboutText,
+                Key::AboutRiot,
             ] {
-                assert!(has(lang.t(key)), "{lang:?} {key:?}: {texts:?}");
+                assert!(!has(lang.t(key)), "{lang:?} {key:?}: {texts:?}");
             }
+            // The tips of the keycap, of the button "Reset" and of the badges show on a hover.
+            let tip = hover_texts(&mut app, &v, lang.t(Key::SetBadges)).expect("the row shows");
+            assert!(
+                tip.iter().any(|t| t == lang.t(Key::SetBadgesNote)),
+                "{lang:?}: {tip:?}"
+            );
+            // The keycap and the button in the move row have a tip each.
+            let tip = hover_texts(&mut app, &v, "Ctrl + F8").expect("the keycap shows");
+            assert!(
+                tip.iter().any(|t| t == lang.t(Key::HotUnlockTip)),
+                "{lang:?}: {tip:?}"
+            );
+            let tip =
+                hover_texts(&mut app, &v, lang.t(Key::SetResetOverlay)).expect("the button shows");
+            assert!(
+                tip.iter().any(|t| t == lang.t(Key::SetResetOverlayTip)),
+                "{lang:?}: {tip:?}"
+            );
+
             // The hotkeys are keycaps: the keys F8 and F9, and Ctrl + F8 for the unlock.
             for key in ["F8", "F9", "Ctrl + F8"] {
                 assert!(has(key), "{lang:?} {key}: {texts:?}");
             }
-            // The card reading tools hold only the reader's own rows now.
+            // The Advanced fold holds the reader's own rows, and the two support buttons.
             assert!(!has(lang.t(Key::ReadOcrLanguage)));
             app.tools_open = true;
             let tools = window_texts(&mut app, &v, Some(2000.0));
@@ -17909,6 +18129,215 @@ mod tests {
         );
         // The size sits in the settings file as 0, 1 or 2 and the row sets the same values.
         assert_eq!(Settings::default().overlay_scale, 1);
+    }
+
+    #[test]
+    fn the_about_fold_holds_the_privacy_text_and_the_riot_disclaimer() {
+        let v = View {
+            phase: Phase::Idle,
+            offer: None,
+            ..pick_view()
+        };
+        for lang in [Lang::En, Lang::Tr] {
+            let mut app = test_app(Settings::default(), lang);
+            app.page = Page::Settings;
+            let all = |app: &mut App| -> Vec<String> {
+                [None, Some(500.0), Some(10_000.0)]
+                    .into_iter()
+                    .flat_map(|scroll| window_texts(app, &v, scroll))
+                    .collect()
+            };
+            let notes = [
+                Key::AboutText,
+                Key::GamesSavedNote,
+                Key::SetUpdateCheckNote,
+                Key::AboutRiot,
+            ];
+            // Closed: only the title shows.
+            let closed = all(&mut app);
+            assert!(
+                closed.iter().any(|t| t == lang.t(Key::GroupAbout)),
+                "{lang:?}"
+            );
+            for key in notes {
+                assert!(!closed.iter().any(|t| t == lang.t(key)), "{lang:?} {key:?}");
+            }
+            // Open: the disclaimer, the games note, the sources and the update check note show.
+            app.about_open = true;
+            let open = all(&mut app);
+            for key in notes {
+                assert!(
+                    open.iter().any(|t| t == lang.t(key)),
+                    "{lang:?} {key:?}: {open:?}"
+                );
+            }
+            // The words of the disclaimer and of the privacy note stay as they were.
+            assert!(Lang::En.t(Key::AboutRiot).contains("Riot Games"));
+            assert!(Lang::En.t(Key::GamesSavedNote).contains("never sends"));
+            assert!(
+                Lang::En
+                    .t(Key::AboutText)
+                    .contains("never reads or modifies game memory")
+            );
+        }
+    }
+
+    #[test]
+    fn an_orange_note_and_the_update_link_stay_outside_the_about_fold() {
+        for lang in [Lang::En, Lang::Tr] {
+            let v = View {
+                phase: Phase::Idle,
+                offer: None,
+                update: Some("v9.9.9".into()),
+                note: Some(Key::OcrUnavailable),
+                ..pick_view()
+            };
+            let mut app = test_app(Settings::default(), lang);
+            app.page = Page::Settings;
+            assert!(!app.about_open);
+            let texts = window_texts(&mut app, &v, Some(10_000.0));
+            let link = lang.fmt(Key::UpdateAvailable, &[&"v9.9.9"]);
+            assert!(texts.contains(&link), "{lang:?}: {texts:?}");
+            assert!(
+                texts.iter().any(|t| t == lang.t(Key::OcrUnavailable)),
+                "{lang:?}: {texts:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_click_on_a_keycap_waits_for_a_key_and_a_second_click_cancels() {
+        let v = View {
+            phase: Phase::Idle,
+            offer: None,
+            ..pick_view()
+        };
+        let mut app = test_app(Settings::default(), Lang::En);
+        app.page = Page::Settings;
+        let ctx = egui::Context::default();
+        theme::setup(&ctx);
+        let frame = |app: &mut App, i: usize, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                time: Some(i as f64 / 10.0),
+                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(MAIN_W, 680.0))),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                app.window_ui(ui, &v);
+            });
+            let shapes = std::mem::take(&mut out.shapes);
+            out.drop_without_applying_deltas();
+            shapes
+        };
+        let mut shapes = Vec::new();
+        for i in 0..6 {
+            shapes = frame(&mut app, i, vec![]);
+        }
+        // The keycap of the overlay key shows "F8".
+        let cap = painted_boxes(&shapes)
+            .into_iter()
+            .find(|(t, _, _)| t == "F8")
+            .expect("the keycap F8")
+            .1;
+        let click = |at: egui::Pos2, pressed: bool| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let at = cap.center();
+        let mut i = 6;
+        for events in [
+            vec![egui::Event::PointerMoved(at)],
+            vec![click(at, true)],
+            vec![click(at, false)],
+            vec![],
+        ] {
+            frame(&mut app, i, events);
+            i += 1;
+        }
+        assert!(
+            app.rebinding.is_some_and(|(w, _)| w == Hotkey::Overlay),
+            "the click waits for a key"
+        );
+        // The keycap now says "Press a key" and it is as wide as it needs. A second click cancels.
+        let shapes = frame(&mut app, i, vec![]);
+        let cap = painted_boxes(&shapes)
+            .into_iter()
+            .find(|(t, _, _)| t == Lang::En.t(Key::HotPress))
+            .expect("the keycap says to press a key")
+            .1;
+        let at = cap.center();
+        for events in [
+            vec![egui::Event::PointerMoved(at)],
+            vec![click(at, true)],
+            vec![click(at, false)],
+            vec![],
+        ] {
+            i += 1;
+            frame(&mut app, i, events);
+        }
+        assert!(app.rebinding.is_none(), "the second click cancels");
+        // The tip of the keycap says what a click does.
+        assert_eq!(Lang::En.t(Key::HotChangeTip), "Click to change");
+        assert_eq!(Lang::Tr.t(Key::HotChangeTip), "Değiştirmek için tıkla");
+    }
+
+    #[test]
+    fn the_reset_button_in_the_move_row_puts_the_overlay_back() {
+        let v = View {
+            phase: Phase::Idle,
+            offer: None,
+            ..pick_view()
+        };
+        let mut app = test_app(Settings::default(), Lang::En);
+        app.page = Page::Settings;
+        app.settings.overlay_pos = Some([100.0, 100.0]);
+        let ctx = egui::Context::default();
+        theme::setup(&ctx);
+        let frame = |app: &mut App, i: usize, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                time: Some(i as f64 / 10.0),
+                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(MAIN_W, 680.0))),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                app.window_ui(ui, &v);
+            });
+            let shapes = std::mem::take(&mut out.shapes);
+            out.drop_without_applying_deltas();
+            shapes
+        };
+        let mut shapes = Vec::new();
+        for i in 0..6 {
+            shapes = frame(&mut app, i, vec![]);
+        }
+        let reset = painted_boxes(&shapes)
+            .into_iter()
+            .find(|(t, _, _)| t == Lang::En.t(Key::SetResetOverlay))
+            .expect("the button Reset")
+            .1;
+        let at = reset.center();
+        let click = |pressed: bool| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        for (i, events) in [
+            vec![egui::Event::PointerMoved(at)],
+            vec![click(true)],
+            vec![click(false)],
+            vec![],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            frame(&mut app, 6 + i, events);
+        }
+        assert_eq!(app.settings.overlay_pos, None);
     }
 
     #[test]
