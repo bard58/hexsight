@@ -4,6 +4,18 @@ All notable changes to this project are in this file. The format follows [Keep a
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-11-08
+
+### Added
+
+- The My games page shows your stats. Period chips (Today, 7 days, 30 days, All) set the range. A profile header shows your win rate, your streak, your average kills, deaths and assists, your KDA, your average game length, your last 10 results and a form line.
+- Three tabs: Games, Champions and Augments. The Augments tab shows how often you picked each of your own augments and how many of those games you won, as counts only, with no percent.
+- Champion highlights show your best and most played champions. Tap a champion or an augment to filter the list. All of it is computed on your PC from your own history, and nothing leaves it.
+
+### Changed
+
+- The Settings page is more compact. The notes move into hover tips. Advanced and About are folded. The card marks sit in one group. The build line and the tips line are merged. The keycap of a hotkey is the button that changes it. Move and reset share one row.
+
 ## [0.1.3] - 2026-11-08
 
 ### Added
