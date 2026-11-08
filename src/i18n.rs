@@ -483,8 +483,10 @@ table! {
     ReasonVsAd = "vs {0} AD", "{0} AD’ye karşı";
     ReasonAntiHeal = "vs {0} healers", "{0} iyileştirene karşı";
     // `ReasonAntiHeal` for one healer: the rule fires for one healer only when it is the fed enemy.
-    // Turkish keeps the noun singular after a number, and "fed" does not fit the overlay cell.
-    ReasonAntiHealFed = "vs a fed healer", "1 iyileştirene karşı";
+    // Turkish keeps "fed" as players say it. The cell of the overlay has the shorter form below.
+    ReasonAntiHealFed = "vs a fed healer", "fed iyileştirene karşı";
+    // `ReasonAntiHealFed` in a cell of the overlay (90 points).
+    ReasonAntiHealFedCell = "vs a fed healer", "fed iyileştiren";
     ReasonVsTanks = "vs {0} tanks", "{0} tanka karşı";
     ReasonPairs = "pairs with {0}", "{0} ile uyumlu";
     // `ReasonPairs` when Hexsight has no name for the partner augment.
@@ -520,7 +522,6 @@ table! {
     // window does not use yet, and drops the `allow` of each one it uses. Names are always in the
     // nominative case, and no suffix follows a place.
     // F1: the style line of the "Next items" card. {0} is an item name.
-    #[allow(dead_code)]
     SuggestPath = "On your {0} path", "{0} yolundasın";
     // F2: the fed enemy. {0} is a champion name, {1} its kills and deaths ("9/1").
     ReasonVsFed = "vs fed {0} ({1})", "Fed rakip: {0} ({1})";
@@ -528,67 +529,45 @@ table! {
     ReasonVsFedCell = "{0} {1}", "{0} {1}";
     // F2: the build kind of the fed enemy in the context line ("Fed: Caitlyn 9/1/4 · 3 crit items").
     // {0} is a count. Several kind parts join with ", ".
-    #[allow(dead_code)]
     CtxKindCrit = "{0} crit items", "{0} kritik eşyası";
-    #[allow(dead_code)]
     CtxKindAp = "{0} AP items", "{0} AP eşyası";
-    #[allow(dead_code)]
     CtxKindAd = "{0} AD items", "{0} AD eşyası";
-    #[allow(dead_code)]
     CtxKindTank = "{0} resist items", "{0} direnç eşyası";
-    #[allow(dead_code)]
     CtxKindHeals = "heals", "iyileşiyor";
     // F4: the tooltip line of the summary card. {0} is your armor, {1} your magic resist.
-    #[allow(dead_code)]
     TipMyStats = "You: {0} armor · {1} magic resist", "Sen: {0} zırh · {1} büyü direnci";
     // F5: the recap line while dead. {0} is one name, or the names joined with `JoinAnd` or ", ".
     // The window adds " · 9/2/4" and " · 85% AD" after it, and drops them first when the line is too wide.
-    #[allow(dead_code)]
     RecapKilledBy = "Killed by {0}", "Seni {0} öldürdü";
     // F5: the recap line for a repeat killer. {0} is a name, {1} the count (2 or more).
-    #[allow(dead_code)]
     RecapRepeat = "{0} killed you {1} times", "{0} seni {1} kez öldürdü";
     // F5: the reason of the killer rule on an item row. {0} is a name, {1} the count (2 or more).
     ReasonVsKiller = "{0} killed you", "Seni {0} öldürdü";
     ReasonVsKillerN = "{0} killed you {1} times", "{0} seni {1} kez öldürdü";
     // `ReasonVsKiller` in a cell of the overlay.
-    ReasonVsKillerCell = "vs your killer", "seni öldürene karşı";
+    // "seni öldürene karşı" needs 94 of the 90 points of a cell; "katiline karşı" says the same.
+    ReasonVsKillerCell = "vs your killer", "katiline karşı";
     // F6: the short word after the enemy faces in an overlay cell.
-    #[allow(dead_code)]
     CellTanky = "tanky", "tank";
-    #[allow(dead_code)]
     CellAntiHeal = "anti-heal", "ağır yara";
-    #[allow(dead_code)]
     CellMagic = "magic dmg", "büyü hasarı";
-    #[allow(dead_code)]
     CellPhysical = "physical", "fiziksel";
-    #[allow(dead_code)]
     CellKilledYou = "killed you", "seni öldürdü";
     // {0} is the kills and deaths of the fed enemy ("9/1").
-    #[allow(dead_code)]
     CellFed = "fed {0}", "fed {0}";
     // The faces that do not fit. {0} is their count.
-    #[allow(dead_code)]
     CellMore = "+{0}", "+{0}";
     // F6: the reason of a team rule on an item row, with the names. {0} is the joined names.
-    #[allow(dead_code)]
     ReasonTanksNamed = "{0} are tanky", "{0} tank";
-    #[allow(dead_code)]
     ReasonHealersNamed = "{0} heal", "{0} iyileşiyor";
-    #[allow(dead_code)]
     ReasonFedHealerNamed = "{0} is fed and heals", "{0} fed, iyileşiyor";
     // {1} is the share (70% in English, %70 in Turkish).
-    #[allow(dead_code)]
     ReasonVsApNamed = "{0}: {1} AP", "{0}: {1} AP";
-    #[allow(dead_code)]
     ReasonVsAdNamed = "{0}: {1} AD", "{0}: {1} AD";
     // Two names. Three or more join with ", ".
-    #[allow(dead_code)]
     JoinAnd = "{0} and {1}", "{0} ve {1}";
     // F7: the plan line under the picks. {0} and {1} are item names.
-    #[allow(dead_code)]
     PlanThen = "Then: {0} → {1}", "Sonra: {0} → {1}";
-    #[allow(dead_code)]
     PlanThenOne = "Then: {0}", "Sonra: {0}";
 
     // ---- Build styles (the archetypes of the data). Used in the title of an item set and on the build card.
@@ -1285,10 +1264,11 @@ mod tests {
             "{0} killed you {1} times",
             "{0} seni {1} kez öldürdü",
         ),
+        (Key::ReasonVsKillerCell, "vs your killer", "katiline karşı"),
         (
-            Key::ReasonVsKillerCell,
-            "vs your killer",
-            "seni öldürene karşı",
+            Key::ReasonAntiHealFedCell,
+            "vs a fed healer",
+            "fed iyileştiren",
         ),
         (Key::CellTanky, "tanky", "tank"),
         (Key::CellAntiHeal, "anti-heal", "ağır yara"),

@@ -13,6 +13,8 @@ All notable changes to this project are in this file. The format follows [Keep a
 
 ### Changed
 
+- The damage mix of the enemy team now uses the damage split of each enemy champion from the build data, so it is right from the start of the game. Before, a team of Akali, Katarina, and Evelynn read as physical damage.
+- The armor and magic resist tips now look at your own armor and magic resist. With a lot of armor, the tips no longer ask for more armor.
 - An enemy is no longer a healer because of Doran's Blade, another part with lifesteal, or Gluttonous Greaves. Only a finished item of lifesteal or omnivamp counts.
 - The item that cuts healing now also comes for one healer when that healer is the fed enemy. The reason then says "vs a fed healer".
 - The basic Boots no longer count as a pair of boots. The upgrades of the boots now stay in the item tips.
@@ -25,6 +27,13 @@ All notable changes to this project are in this file. The format follows [Keep a
 
 ### Added
 
+- The "Next items" card now follows the build path that you are on. After your first finished item, the header says "On your Malignance path", and the next items come from that path. When Hexsight is not sure of the path, the card shows the build style as before.
+- A line under the item tips now shows the next steps after them, for example "Then: Rabadon's Deathcap → Void Staff". It is hidden when your slots are full.
+- A new rule for the fed enemy. When the fed enemy deals mostly magic or mostly physical damage, the tips add a resist item with the reason "vs fed Syndra (9/1)". The summary line names the build of the fed enemy, for example "Fed: Caitlyn 9/1/4 · 3 crit items".
+- While you are dead, the overlay and the main window say who killed you: "Killed by Zed · 9/2/4 · 85% AD", "Zed killed you 3 times", or "Killed by Zed and Lux". An enemy that killed you can raise a resist item, with the reason "Zed killed you".
+- The reasons of the rules now name the enemies: "Amumu and Nautilus are tanky", "Soraka and Aatrox heal", "Vel'Koz, Lux: 70% AP". The overlay cells show the faces of those enemies and a short word. When the names do not fit, the count form shows as before.
+- While you are dead, a tip that your gold now pays for glows green, and its dot pulses twice.
+- The tooltip of the summary card shows your own armor and magic resist.
 - An item tip that you cannot pay for yet now names the part that your gold pays for now. The main window shows it in a line under the item. The overlay shows it as a small icon.
 - The overlay cells now show the gold that is missing for an item, for example "-700".
 - Hexsight now reads the items of the players each second while you are dead and for 10 seconds after a purchase. A purchase of 150 gold now counts too. Before, the list was read every 4 seconds, and only a purchase of 250 gold or more counted.
