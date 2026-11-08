@@ -1945,6 +1945,7 @@ fn reason_text(lang: Lang, sd: &StaticData, r: Reason) -> String {
         Reason::OtherBuild => lang.t(Key::ReasonOtherBuild).to_string(),
         Reason::VsAp(p) => lang.fmt(Key::ReasonVsAp, &[&lang.pct(f32::from(p), 0)]),
         Reason::VsAd(p) => lang.fmt(Key::ReasonVsAd, &[&lang.pct(f32::from(p), 0)]),
+        Reason::AntiHeal(1) => lang.t(Key::ReasonAntiHealFed).to_string(),
         Reason::AntiHeal(n) => lang.fmt(Key::ReasonAntiHeal, &[&n]),
         Reason::VsTanks(n) => lang.fmt(Key::ReasonVsTanks, &[&n]),
         Reason::Pairs { augment, .. } => sd.augments.get(&augment).map_or_else(
@@ -12075,6 +12076,7 @@ mod tests {
             Reason::VsAp(100),
             Reason::VsAd(100),
             Reason::AntiHeal(5),
+            Reason::AntiHeal(1),
             Reason::VsTanks(5),
         ];
         for lang in [Lang::En, Lang::Tr] {
@@ -12104,6 +12106,7 @@ mod tests {
             Reason::VsAp(100),
             Reason::VsAd(100),
             Reason::AntiHeal(5),
+            Reason::AntiHeal(1),
             Reason::VsTanks(5),
         ];
         for lang in [Lang::En, Lang::Tr] {
@@ -12116,6 +12119,24 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn one_healer_reads_as_a_fed_healer() {
+        // The anti-heal rule fires for one healer only when it is the fed enemy, so no text says "1 healers".
+        let sd = suggest_data();
+        assert_eq!(
+            reason_text(Lang::En, &sd, Reason::AntiHeal(1)),
+            "vs a fed healer"
+        );
+        assert_eq!(
+            reason_text(Lang::Tr, &sd, Reason::AntiHeal(1)),
+            "1 iyileştirene karşı"
+        );
+        assert_eq!(
+            reason_text(Lang::En, &sd, Reason::AntiHeal(2)),
+            "vs 2 healers"
+        );
     }
 
     #[test]

@@ -4,6 +4,18 @@ All notable changes to this project are in this file. The format follows [Keep a
 
 ## [Unreleased]
 
+### Changed
+
+- An enemy is no longer a healer because of Doran's Blade, another part with lifesteal, or Gluttonous Greaves. Only a finished item of lifesteal or omnivamp counts.
+- The item that cuts healing now also comes for one healer when that healer is the fed enemy. The reason then says "vs a fed healer".
+- The basic Boots no longer count as a pair of boots. The upgrades of the boots now stay in the item tips.
+- The damage mix of the enemy team now counts each enemy by the gold of its damage items. A support or a tank with few items counts less than a carry with six items.
+- The bonus for magic resist, armor, or penetration is now half when you own one such finished item, and none when you own two.
+- When the enemy team deals mostly magic or mostly physical damage and your build has no item with that resist, the tips now add one resist item that fits your build.
+- Your AP or AD class and the tank build now come from the core items of your build.
+- A tip from a rule of Hexsight now takes the third place before your first finished item only when its points are close to the next item.
+- A damage item with armor or magic resist, such as Zhonya's Hourglass, no longer makes an enemy count as tanky.
+
 ## [0.1.2] - 2026-11-08
 
 ### Fixed
