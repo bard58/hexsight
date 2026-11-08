@@ -219,6 +219,12 @@ table! {
     // {0} is the champion you get, {1} the one your teammate gets. Turkish cannot add the
     // accusative to a name in a template, so it says "comes to you" and "goes to your teammate".
     TradeGetGive = "You get {0}; they get {1}", "{0} sana gelir, {1} takım arkadaşına gider.";
+    // The strip of the champions that your teammates have, under the bench.
+    SecTeam = "Teammates", "Takım arkadaşların";
+    // The last line of the tooltip of a teammate: what a click does, or why it does nothing.
+    TeamAskTrade = "Click to ask for a trade", "Takas istemek için tıkla";
+    TeamAsked = "Trade asked · click to cancel", "Takas istendi · iptal için tıkla";
+    TeamNoTrade = "No trade possible now", "Şu an takas yapılamaz";
 
     // ---- My games page
     MyGames = "My games", "Maçlarım";

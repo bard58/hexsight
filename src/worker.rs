@@ -925,11 +925,7 @@ fn poll_loop(
             };
             if key(&s.champ_select) != key(&cs) {
                 changed = true;
-                // Prefetch the champions I can swap to.
-                for id in cs
-                    .iter()
-                    .flat_map(|c| std::iter::once(c.my_champion).chain(c.bench.iter().copied()))
-                {
+                for id in cs.iter().flat_map(select_prefetch) {
                     let _ = want.send(id);
                 }
             }
@@ -1292,6 +1288,16 @@ fn read_live(
         asked: due,
         roster,
     }
+}
+
+/// The champions of a champ select whose icons and stats to fetch: yours, the bench
+/// that you can swap to, and the champions of your teammates (the team strip shows
+/// their tiers, and a click asks for a trade).
+pub(crate) fn select_prefetch(c: &ChampSelect) -> Vec<i64> {
+    std::iter::once(c.my_champion)
+        .chain(c.bench.iter().copied())
+        .chain(c.team.iter().map(|m| m.champion))
+        .collect()
 }
 
 /// The enemy champions of a new roster whose stats are not asked for yet (`sent`): each known
@@ -3370,6 +3376,26 @@ WindowMode=2
     }
 
     // ---- v0.1.3: the enemy prefetch, the shares, the own stats and the death recap.
+
+    #[test]
+    fn the_champ_select_prefetch_asks_for_you_the_bench_and_the_team() {
+        let c = ChampSelect {
+            my_champion: 1,
+            team: vec![
+                lcu::Mate {
+                    cell: 1,
+                    champion: 20,
+                },
+                lcu::Mate {
+                    cell: 3,
+                    champion: 21,
+                },
+            ],
+            bench: vec![5, 6],
+            ..Default::default()
+        };
+        assert_eq!(select_prefetch(&c), vec![1, 5, 6, 20, 21]);
+    }
 
     #[test]
     fn enemy_prefetch_sends_each_enemy_once_and_no_ally() {

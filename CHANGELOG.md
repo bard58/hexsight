@@ -27,6 +27,7 @@ All notable changes to this project are in this file. The format follows [Keep a
 
 ### Added
 
+- In champ select, a "Teammates" strip under the bench shows the champions of your teammates with their tier badges. A click on a teammate asks for a champion trade, and a second click on a teammate that you asked takes the request back. A teammate who cannot trade now shows dim.
 - The "Next items" card now follows the build path that you are on. After your first finished item, the header says "On your Malignance path", and the next items come from that path. When Hexsight is not sure of the path, the card shows the build style as before.
 - A line under the item tips now shows the next steps after them, for example "Then: Rabadon's Deathcap → Void Staff". It is hidden when your slots are full.
 - A new rule for the fed enemy. When the fed enemy deals mostly magic or mostly physical damage, the tips add a resist item with the reason "vs fed Syndra (9/1)". The summary line names the build of the fed enemy, for example "Fed: Caitlyn 9/1/4 · 3 crit items".
