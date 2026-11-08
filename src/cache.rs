@@ -248,7 +248,7 @@ pub fn web_agent() -> ureq::Agent {
 }
 
 /// "Hexsight/0.1 (+https://github.com/<owner>/<name>)".
-fn user_agent() -> String {
+pub fn user_agent() -> String {
     format!("Hexsight/0.1 (+https://github.com/{})", crate::update::REPO)
 }
 

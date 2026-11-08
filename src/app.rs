@@ -543,6 +543,8 @@ pub struct App {
     /// The item sets of Hexsight were deleted for the setting that is off.
     item_sets_cleared: bool,
     hwnd: Option<isize>,
+    /// The old exe of an update was deleted, or there is none to delete.
+    old_exe_cleaned: bool,
     /// Debug capture (env HEXSIGHT_SHOT): start time and whether it was requested.
     started: std::time::Instant,
     shot_sent: bool,
@@ -2695,6 +2697,89 @@ fn overlay_has_content(lang: Lang, sd: &StaticData, s: &Settings, a: &Advice) ->
         || ((s.suggest_items || s.suggest_context) && !recap_texts(lang, sd, a).is_empty())
 }
 
+/// What a control of the update says and does.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum UpdateAct {
+    /// A click starts the update.
+    Start,
+    /// A click opens the download page.
+    OpenPage,
+    /// No click: the update runs, or it has to wait.
+    Nothing,
+}
+
+/// The text, the tip and the click of the update control in the footer.
+#[derive(Clone, Debug, PartialEq)]
+struct UpdateShow {
+    text: String,
+    tip: String,
+    act: UpdateAct,
+}
+
+impl UpdateShow {
+    fn color(&self) -> Color32 {
+        if self.act == UpdateAct::Nothing {
+            LABEL_2
+        } else {
+            BLUE
+        }
+    }
+}
+
+/// Why an update failed, in the language of the window.
+fn update_error_text(lang: Lang, e: &update::UpdateError) -> String {
+    use update::UpdateError as E;
+    let reason = match e {
+        E::NotWritable => return lang.t(Key::UpdateNotWritable).to_string(),
+        E::Busy => return lang.t(Key::UpdateBlocked).to_string(),
+        E::Net | E::Disabled | E::UpToDate => lang.t(Key::UpdateFailNet).to_string(),
+        E::Asset => lang.t(Key::UpdateFailAsset).to_string(),
+        E::TooBig | E::Hash | E::NotExe => lang.t(Key::UpdateFailHash).to_string(),
+        E::Disk | E::OldLocked | E::Swap => lang.t(Key::UpdateFailSwap).to_string(),
+        E::Restart => lang.t(Key::UpdateFailRestart).to_string(),
+        E::RollbackFailed(path) => lang.fmt(Key::UpdateFailRollback, &[path]),
+    };
+    lang.fmt(Key::UpdateFailed, &[&reason])
+}
+
+/// The footer control of a newer version `tag`. The button waits in a champ select and in a game.
+fn update_show(lang: Lang, state: &update::UpdateState, blocked: bool, tag: &str) -> UpdateShow {
+    use update::UpdateState as S;
+    let (text, tip, act) = match state {
+        S::Downloading { done, total } => (
+            lang.fmt(Key::UpdateDownloading, &[&update::percent(*done, *total)]),
+            String::new(),
+            UpdateAct::Nothing,
+        ),
+        S::Verifying => (
+            lang.t(Key::UpdateVerifying).to_string(),
+            String::new(),
+            UpdateAct::Nothing,
+        ),
+        S::Installing => (
+            lang.t(Key::UpdateInstalling).to_string(),
+            String::new(),
+            UpdateAct::Nothing,
+        ),
+        S::Failed(e) => (
+            lang.t(Key::UpdateOpenPage).to_string(),
+            update_error_text(lang, e),
+            UpdateAct::OpenPage,
+        ),
+        S::Idle if blocked => (
+            lang.t(Key::UpdateNow).to_string(),
+            lang.t(Key::UpdateBlocked).to_string(),
+            UpdateAct::Nothing,
+        ),
+        S::Idle => (
+            lang.t(Key::UpdateNow).to_string(),
+            lang.fmt(Key::UpdateNowTip, &[&tag]),
+            UpdateAct::Start,
+        ),
+    };
+    UpdateShow { text, tip, act }
+}
+
 /// One consistent copy of the shared state per frame.
 struct View {
     phase: Phase,
@@ -2745,6 +2830,10 @@ struct View {
     /// The tag of a newer release (for example "v0.2.0"). `None` when this build is
     /// current, or the setting "Check for new versions" is off.
     update: Option<String>,
+    /// What the one-click update does now.
+    update_state: update::UpdateState,
+    /// A champ select or a game runs, so the update waits.
+    update_blocked: bool,
     /// The suggestions of the poll thread. `None` outside a Mayhem game, while the data is not there,
     /// or with every suggestion setting off.
     advice: Option<Arc<Advice>>,
@@ -2847,6 +2936,7 @@ impl App {
             item_set_for: None,
             item_sets_cleared: false,
             hwnd,
+            old_exe_cleaned: false,
             started: std::time::Instant::now(),
             shot_sent: false,
             debug_overlay: false,
@@ -3288,6 +3378,7 @@ impl eframe::App for App {
             self.set_rebinding(None);
         }
         // Tell the worker threads what only the window knows.
+        let restart;
         {
             let minimized = ctx.input(|i| i.viewport().minimized) == Some(true);
             // Before the lock below: the toast takes it too.
@@ -3306,10 +3397,24 @@ impl eframe::App for App {
             s.window_rect = window;
             s.overlay_rect = overlay;
             s.update_check = self.settings.check_updates;
+            restart = s.update_quit;
             s.suggest_on = self.settings.suggests();
             if let Some((screen, ids)) = &offered {
                 s.note_offered(*screen, ids);
             }
+        }
+        // The old exe of an update is the way back if this copy is bad. It goes only after
+        // this copy has run well for a while.
+        if !self.old_exe_cleaned && self.started.elapsed() >= update::HEALTHY_RUN {
+            self.old_exe_cleaned = true;
+            if let Ok(exe) = std::env::current_exe() {
+                update::cleanup_old(&exe);
+            }
+        }
+        // The new version runs after an update: keep the settings and end this copy.
+        if restart {
+            self.settings.save();
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         // Badges on the game cards (beta): a window over the game, only while an
         // offer shows in a Mayhem game. egui closes the window when it is not shown.
@@ -3412,6 +3517,9 @@ impl eframe::App for App {
                 picks_done: s.picks_done,
                 item_sets_for: s.item_sets_for,
                 update: s.update.clone().filter(|_| self.settings.check_updates),
+                update_state: s.update_state.clone(),
+                update_blocked: update::update_allowed(s.phase, s.game_window, s.live.level, false)
+                    .is_err(),
                 advice: s.advice.clone(),
                 gold: s.live.gold,
             }
@@ -3846,6 +3954,61 @@ impl App {
         });
     }
 
+    /// The click on an update control.
+    fn update_click(&self, act: UpdateAct) {
+        match act {
+            UpdateAct::Start => {
+                let _ = self.h.cmd.send(Cmd::UpdateNow);
+            }
+            UpdateAct::OpenPage => open_url(&update::releases_url(update::REPO)),
+            UpdateAct::Nothing => {}
+        }
+    }
+
+    /// The update under the line "Update available" in Settings: the button, the progress, or
+    /// the reason it failed with the link to the download page.
+    fn update_controls(&self, ui: &mut Ui, v: &View, tag: &str) {
+        use update::UpdateState as S;
+        let lang = self.lang;
+        let show = update_show(lang, &v.update_state, v.update_blocked, tag);
+        ui.add_space(2.0);
+        let note = |ui: &mut Ui, text: String, color: Color32| {
+            ui.add(egui::Label::new(egui::RichText::new(text).size(11.5).color(color)).wrap());
+        };
+        match &v.update_state {
+            S::Downloading { .. } | S::Verifying | S::Installing => note(ui, show.text, LABEL_2),
+            S::Idle if v.update_blocked => note(ui, show.tip, LABEL_2),
+            S::Idle => {
+                if kit::accent_button(ui, lang.t(Key::UpdateNow), BLUE)
+                    .on_hover_text(&show.tip)
+                    .clicked()
+                {
+                    self.update_click(UpdateAct::Start);
+                }
+            }
+            S::Failed(e) => {
+                note(ui, show.tip, ORANGE);
+                ui.add_space(2.0);
+                ui.horizontal_wrapped(|ui| {
+                    if *e != update::UpdateError::NotWritable
+                        && !v.update_blocked
+                        && kit::accent_button(ui, lang.t(Key::UpdateNow), BLUE)
+                            .on_hover_text(lang.fmt(Key::UpdateNowTip, &[&tag]))
+                            .clicked()
+                    {
+                        self.update_click(UpdateAct::Start);
+                    }
+                    if kit::accent_button(ui, lang.t(Key::UpdateOpenPage), SURFACE_3)
+                        .on_hover_text(lang.t(Key::UpdateTip))
+                        .clicked()
+                    {
+                        self.update_click(UpdateAct::OpenPage);
+                    }
+                });
+            }
+        }
+    }
+
     /// Hide the main window: minimize it. The app and the card reader keep running, and champ select
     /// (or the start of a game) brings the window back. The toast "Hexsight keeps running" does
     /// not show now, because nobody sees a toast in a minimized window: `tell_on_return` shows it.
@@ -3955,11 +4118,14 @@ impl App {
         } else {
             (lang.t(Key::LoadingData).to_string(), String::new(), LABEL_2)
         };
-        // A newer version takes the right side as a link. On the Settings page the version moves to the left.
-        let link = v.update.is_some().then(|| lang.t(Key::UpdateShort));
-        let (left, right, color) = match (link, self.page == Page::Settings) {
-            (Some(t), true) => (format!("{left} {right}"), t.to_string(), BLUE),
-            (Some(t), false) => (left, t.to_string(), BLUE),
+        // A newer version takes the right side as a button. On the Settings page the version moves to the left.
+        let show = v
+            .update
+            .as_ref()
+            .map(|tag| update_show(lang, &v.update_state, v.update_blocked, tag));
+        let (left, right, color) = match (&show, self.page == Page::Settings) {
+            (Some(s), true) => (format!("{left} {right}"), s.text.clone(), s.color()),
+            (Some(s), false) => (left, s.text.clone(), s.color()),
             (None, _) => (left, right, color),
         };
         let font = FontId::proportional(11.0);
@@ -3997,24 +4163,31 @@ impl App {
             font,
             color,
         );
-        if let (Some(tag), Some(_)) = (&v.update, link) {
+        if let Some(s) = &show {
+            let sense = if s.act == UpdateAct::Nothing {
+                Sense::hover()
+            } else {
+                Sense::click()
+            };
             let resp = ui.interact(
                 sized.expand2(vec2(4.0, 4.0)),
                 ui.scope_id().with("update"),
-                Sense::click(),
+                sense,
             );
-            if resp.hovered() {
+            if resp.hovered() && s.act != UpdateAct::Nothing {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 ui.painter().line_segment(
                     [sized.left_bottom(), sized.right_bottom()],
                     egui::Stroke::new(1.0, color),
                 );
             }
-            if resp
-                .on_hover_text(format!("{} {tag}", lang.t(Key::UpdateTip)))
-                .clicked()
-            {
-                open_url(&update::releases_url(update::REPO));
+            let resp = if s.tip.is_empty() {
+                resp
+            } else {
+                resp.on_hover_text(&s.tip)
+            };
+            if resp.clicked() {
+                self.update_click(s.act);
             }
         }
     }
@@ -6208,20 +6381,19 @@ impl App {
                             .wrap(),
                         );
                     }
-                    // A newer version: a link to the download page.
+                    // A newer version: the button "Update now", its progress, or the reason it failed.
                     if let Some(tag) = &v.update {
                         ui.add_space(4.0);
-                        let text = egui::RichText::new(lang.fmt(Key::UpdateAvailable, &[tag]))
-                            .size(12.5)
-                            .family(semibold())
-                            .color(BLUE);
-                        let resp = ui.add(egui::Label::new(text).sense(Sense::click()));
-                        if resp.hovered() {
-                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                        }
-                        if resp.on_hover_text(lang.t(Key::UpdateTip)).clicked() {
-                            open_url(&update::releases_url(update::REPO));
-                        }
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(lang.fmt(Key::UpdateAvailable, &[tag]))
+                                    .size(12.5)
+                                    .family(semibold())
+                                    .color(BLUE),
+                            )
+                            .wrap(),
+                        );
+                        self.update_controls(ui, v, tag);
                     }
                     ui.add_space(6.0);
                     ui.horizontal_wrapped(|ui| {
@@ -10765,6 +10937,8 @@ mod tests {
             picks_done: 1,
             item_sets_for: None,
             update: None,
+            update_state: update::UpdateState::Idle,
+            update_blocked: false,
             advice: None,
             gold: None,
         }
@@ -12707,7 +12881,7 @@ mod tests {
     #[test]
     fn the_update_link_shows_in_the_footer_and_in_about_only_when_a_newer_version_exists() {
         for lang in [Lang::En, Lang::Tr] {
-            let link = lang.t(Key::UpdateShort);
+            let link = lang.t(Key::UpdateNow);
             let about = lang.fmt(Key::UpdateAvailable, &[&"v0.2.0"]);
             // The main page: the footer carries the link.
             let mut app = test_app(Settings::default(), lang);
@@ -12746,8 +12920,8 @@ mod tests {
                 "{lang:?}: {texts:?}"
             );
         }
-        // The Turkish link is the words of the owner.
-        assert_eq!(Lang::Tr.t(Key::UpdateShort), "Yeni sürüm var");
+        // The Turkish button is the words of the owner.
+        assert_eq!(Lang::Tr.t(Key::UpdateNow), "Şimdi güncelle");
     }
 
     #[test]
@@ -12759,7 +12933,7 @@ mod tests {
             let left = lang.fmt(Key::FooterSource, &[&"aramkit", &"16.21"]);
             let w = text_width(&ctx, &left, FontId::proportional(11.0))
                 + 12.0
-                + text_width(&ctx, lang.t(Key::UpdateShort), FontId::proportional(11.0));
+                + text_width(&ctx, lang.t(Key::UpdateNow), FontId::proportional(11.0));
             assert!(w <= MAIN_W - 2.0 * MARGIN, "{lang:?}: {w:.1}");
             // The Settings footer: "Hexsight v0.1.0" and the link.
             let w = text_width(
@@ -12767,7 +12941,7 @@ mod tests {
                 &format!("Hexsight v{}", update::VERSION),
                 FontId::proportional(11.0),
             ) + 12.0
-                + text_width(&ctx, lang.t(Key::UpdateShort), FontId::proportional(11.0));
+                + text_width(&ctx, lang.t(Key::UpdateNow), FontId::proportional(11.0));
             assert!(w <= MAIN_W - 2.0 * MARGIN, "{lang:?}: {w:.1}");
         }
     }
@@ -16119,7 +16293,7 @@ mod tests {
                 let left = lang.fmt(Key::FooterPatchData, &[&"16.22", &day]);
                 let w = text_width(&ctx, &left, font.clone())
                     + 12.0
-                    + text_width(&ctx, lang.t(Key::UpdateShort), font.clone());
+                    + text_width(&ctx, lang.t(Key::UpdateNow), font.clone());
                 assert!(w <= MAIN_W - 2.0 * MARGIN, "{lang:?} {left}: {w:.1}");
             }
         }
@@ -16470,6 +16644,8 @@ mod tests {
             picks_done: v.picks_done,
             item_sets_for: v.item_sets_for,
             update: v.update.clone(),
+            update_state: v.update_state.clone(),
+            update_blocked: v.update_blocked,
             advice: v.advice.clone(),
             gold: v.gold,
         }
@@ -18450,5 +18626,369 @@ mod tests {
         let (found, page) = frame_meshes(&select(1, 0), 760.0);
         assert!(page.is_some_and(|h| h <= room_of(680.0)), "{page:?}");
         assert!(found.is_empty());
+    }
+
+    // ---- The one-click update in the window
+
+    /// A view with a newer version and this update state.
+    fn update_view(state: update::UpdateState, blocked: bool) -> View {
+        View {
+            phase: if blocked {
+                Phase::ChampSelect
+            } else {
+                Phase::Idle
+            },
+            offer: None,
+            update: Some("v0.2.0".into()),
+            update_state: state,
+            update_blocked: blocked,
+            ..pick_view()
+        }
+    }
+
+    #[test]
+    fn the_update_control_says_what_the_state_is() {
+        use update::{UpdateError as E, UpdateState as S};
+        for lang in [Lang::En, Lang::Tr] {
+            let show = |st: S, blocked: bool| update_show(lang, &st, blocked, "v0.2.0");
+            // Ready: the button, with the version in the tip.
+            let ready = show(S::Idle, false);
+            assert_eq!(ready.text, lang.t(Key::UpdateNow));
+            assert_eq!(ready.act, UpdateAct::Start);
+            assert!(ready.tip.contains("v0.2.0"), "{lang:?}: {}", ready.tip);
+            // A champ select or a game: the same text, no click, and the reason as the tip.
+            let blocked = show(S::Idle, true);
+            assert_eq!(blocked.text, lang.t(Key::UpdateNow));
+            assert_eq!(blocked.act, UpdateAct::Nothing);
+            assert_eq!(blocked.tip, lang.t(Key::UpdateBlocked));
+            // The download shows the percent and takes no click.
+            let down = show(
+                S::Downloading {
+                    done: 50,
+                    total: 200,
+                },
+                false,
+            );
+            assert_eq!(down.text, lang.fmt(Key::UpdateDownloading, &[&25]));
+            assert!(down.text.contains("25") && down.act == UpdateAct::Nothing);
+            // The percent holds before the size is known.
+            let first = show(S::Downloading { done: 0, total: 0 }, false);
+            assert_eq!(first.text, lang.fmt(Key::UpdateDownloading, &[&0]));
+            assert_eq!(show(S::Verifying, false).text, lang.t(Key::UpdateVerifying));
+            assert_eq!(
+                show(S::Installing, false).text,
+                lang.t(Key::UpdateInstalling)
+            );
+            for st in [S::Verifying, S::Installing] {
+                assert_eq!(show(st, false).act, UpdateAct::Nothing);
+            }
+            // A failure falls back to the download page and names the reason.
+            let failed = show(S::Failed(E::Hash), false);
+            assert_eq!(failed.text, lang.t(Key::UpdateOpenPage));
+            assert_eq!(failed.act, UpdateAct::OpenPage);
+            assert_eq!(
+                failed.tip,
+                lang.fmt(Key::UpdateFailed, &[&lang.t(Key::UpdateFailHash)])
+            );
+        }
+    }
+
+    #[test]
+    fn every_update_error_has_a_text_that_never_shows_a_raw_error() {
+        use update::UpdateError as E;
+        let errors = [
+            E::Net,
+            E::Asset,
+            E::TooBig,
+            E::Hash,
+            E::NotExe,
+            E::Disk,
+            E::NotWritable,
+            E::Busy,
+            E::OldLocked,
+            E::Swap,
+            E::Restart,
+            E::RollbackFailed(r"C:\x\Hexsight.exe.old".into()),
+            E::Disabled,
+        ];
+        for lang in [Lang::En, Lang::Tr] {
+            for e in &errors {
+                let text = update_error_text(lang, e);
+                assert!(
+                    !text.is_empty() && !text.contains('{'),
+                    "{lang:?} {e:?}: {text}"
+                );
+                assert!(
+                    !text.contains("Net") && !text.contains("Rollback"),
+                    "{text}"
+                );
+            }
+            let text = update_error_text(lang, &E::RollbackFailed(r"C:\x\Hexsight.exe.old".into()));
+            assert!(text.contains(r"C:\x\Hexsight.exe.old"), "{text}");
+            assert_eq!(
+                update_error_text(lang, &E::NotWritable),
+                lang.t(Key::UpdateNotWritable)
+            );
+        }
+    }
+
+    #[test]
+    fn the_footer_and_settings_show_each_state_of_the_update() {
+        use update::{UpdateError as E, UpdateState as S};
+        for lang in [Lang::En, Lang::Tr] {
+            let now = lang.t(Key::UpdateNow);
+            let page = lang.t(Key::UpdateOpenPage);
+            let progress = lang.fmt(Key::UpdateDownloading, &[&42]);
+            for settings in [false, true] {
+                let mut app = test_app(Settings::default(), lang);
+                if settings {
+                    app.page = Page::Settings;
+                }
+                let scroll = settings.then_some(10_000.0);
+                let mut texts = |st: S, blocked: bool| {
+                    window_texts(&mut app, &update_view(st, blocked), scroll)
+                };
+                let has = |texts: &[String], t: &str| texts.iter().any(|x| x == t);
+                // Available: the button, and no progress.
+                let t = texts(S::Idle, false);
+                assert!(
+                    has(&t, now) && !has(&t, &progress),
+                    "{lang:?} {settings}: {t:?}"
+                );
+                // The button shows twice in Settings (the footer and the row), once on the main page.
+                let count = t.iter().filter(|x| *x == now).count();
+                assert_eq!(count, if settings { 2 } else { 1 }, "{lang:?}: {t:?}");
+                // Downloading: the percent, and no button to click twice.
+                let t = texts(
+                    S::Downloading {
+                        done: 42,
+                        total: 100,
+                    },
+                    false,
+                );
+                assert!(
+                    has(&t, &progress) && !has(&t, now),
+                    "{lang:?} {settings}: {t:?}"
+                );
+                // Checking and installing.
+                let t = texts(S::Verifying, false);
+                assert!(
+                    has(&t, lang.t(Key::UpdateVerifying)) && !has(&t, now),
+                    "{t:?}"
+                );
+                let t = texts(S::Installing, false);
+                assert!(
+                    has(&t, lang.t(Key::UpdateInstalling)) && !has(&t, now),
+                    "{t:?}"
+                );
+                // Failed: the link to the download page, and in Settings the reason.
+                let t = texts(S::Failed(E::Net), false);
+                assert!(has(&t, page), "{lang:?} {settings}: {t:?}");
+                let reason = update_error_text(lang, &E::Net);
+                assert_eq!(has(&t, &reason), settings, "{lang:?} {settings}: {t:?}");
+                // The folder is read-only: no button to retry, only the page.
+                let t = texts(S::Failed(E::NotWritable), false);
+                assert!(has(&t, page) && !has(&t, now), "{lang:?} {settings}: {t:?}");
+                // In a champ select the button waits. Settings says why, with no button.
+                let t = texts(S::Idle, true);
+                if settings {
+                    assert!(has(&t, lang.t(Key::UpdateBlocked)), "{lang:?}: {t:?}");
+                }
+                // The footer keeps its grey text. Settings has no second button.
+                let count = t.iter().filter(|x| *x == now).count();
+                assert_eq!(count, 1, "{lang:?} {settings}: {t:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn no_update_control_shows_without_a_newer_version() {
+        for lang in [Lang::En, Lang::Tr] {
+            let mut app = test_app(Settings::default(), lang);
+            let v = View {
+                update: None,
+                update_state: update::UpdateState::Failed(update::UpdateError::Net),
+                ..update_view(update::UpdateState::Idle, false)
+            };
+            for (page, scroll) in [(Page::Main, None), (Page::Settings, Some(10_000.0))] {
+                app.page = page;
+                let t = window_texts(&mut app, &v, scroll);
+                for key in [Key::UpdateNow, Key::UpdateOpenPage, Key::UpdateBlocked] {
+                    assert!(
+                        !t.iter().any(|x| x == lang.t(key)),
+                        "{lang:?} {key:?}: {t:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Click the text `label` that shows highest on the page, as a player does. The result is
+    /// every call that the window sent to the worker.
+    fn click_text(app: &mut App, v: &View, label: &str, scroll: Option<f32>) -> Vec<Cmd> {
+        let (cmd, sent) = std::sync::mpsc::channel();
+        app.h.cmd = cmd;
+        app.debug_scroll = scroll;
+        let ctx = egui::Context::default();
+        theme::setup(&ctx);
+        let mut frame = |i: usize, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                time: Some(i as f64 / 10.0),
+                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(MAIN_W, 680.0))),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                app.window_ui(ui, v);
+            });
+            let boxes = painted_boxes(&out.shapes);
+            out.shapes.clear();
+            out.drop_without_applying_deltas();
+            boxes
+        };
+        let mut boxes = Vec::new();
+        for i in 0..4 {
+            boxes = frame(i, vec![]);
+        }
+        let Some(at) = boxes
+            .iter()
+            .filter(|(t, ..)| t == label)
+            .min_by(|a, b| a.1.center().y.total_cmp(&b.1.center().y))
+            .map(|(_, r, _)| r.center())
+        else {
+            panic!("no text {label:?}: {boxes:?}");
+        };
+        let press = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(4, vec![egui::Event::PointerMoved(at)]);
+        frame(5, vec![]);
+        frame(6, vec![press(true)]);
+        frame(7, vec![press(false)]);
+        frame(8, vec![]);
+        sent.try_iter().collect()
+    }
+
+    #[test]
+    fn the_update_button_sends_the_call_in_the_footer_and_in_settings() {
+        for lang in [Lang::En, Lang::Tr] {
+            let now = lang.t(Key::UpdateNow);
+            let v = update_view(update::UpdateState::Idle, false);
+            let mut app = test_app(Settings::default(), lang);
+            // The footer of the main page.
+            let sent = click_text(&mut app, &v, now, None);
+            assert!(matches!(sent.as_slice(), [Cmd::UpdateNow]), "{lang:?}");
+            // The button in Settings is the first text of that name from the top.
+            app.page = Page::Settings;
+            let sent = click_text(&mut app, &v, now, Some(10_000.0));
+            assert!(matches!(sent.as_slice(), [Cmd::UpdateNow]), "{lang:?}");
+        }
+    }
+
+    #[test]
+    fn the_update_button_sends_nothing_while_the_update_waits_or_runs() {
+        let now = Lang::En.t(Key::UpdateNow);
+        let mut app = test_app(Settings::default(), Lang::En);
+        // A champ select or a game: the footer text shows, but a click does nothing.
+        let v = update_view(update::UpdateState::Idle, true);
+        assert!(click_text(&mut app, &v, now, None).is_empty());
+        // A running download shows the percent, and a click on it does nothing.
+        let v = update_view(
+            update::UpdateState::Downloading { done: 1, total: 4 },
+            false,
+        );
+        let text = Lang::En.fmt(Key::UpdateDownloading, &[&25]);
+        assert!(click_text(&mut app, &v, &text, None).is_empty());
+        // The same on the Settings page.
+        app.page = Page::Settings;
+        assert!(click_text(&mut app, &v, &text, Some(10_000.0)).is_empty());
+    }
+
+    #[test]
+    fn a_failed_update_offers_the_button_again_in_settings_unless_the_folder_is_read_only() {
+        use update::{UpdateError as E, UpdateState as S};
+        let now = Lang::En.t(Key::UpdateNow);
+        let mut app = test_app(Settings::default(), Lang::En);
+        app.page = Page::Settings;
+        let v = update_view(S::Failed(E::Net), false);
+        let sent = click_text(&mut app, &v, now, Some(10_000.0));
+        assert!(matches!(sent.as_slice(), [Cmd::UpdateNow]));
+    }
+
+    #[test]
+    fn the_new_update_texts_fit_the_footer_and_the_settings_card() {
+        let ctx = egui::Context::default();
+        theme::setup(&ctx);
+        for lang in [Lang::En, Lang::Tr] {
+            // The footer: the source text of the longest patch, and the longest update text.
+            let left = lang.fmt(Key::FooterSource, &[&"aramkit", &"16.21"]);
+            let settings_left = format!("Hexsight v{}", update::VERSION);
+            let right = [
+                lang.t(Key::UpdateNow).to_string(),
+                lang.t(Key::UpdateOpenPage).to_string(),
+                lang.t(Key::UpdateVerifying).to_string(),
+                lang.t(Key::UpdateInstalling).to_string(),
+                lang.fmt(Key::UpdateDownloading, &[&100]),
+            ];
+            for r in &right {
+                let rw = text_width(&ctx, r, FontId::proportional(11.0));
+                for l in [&left, &settings_left] {
+                    let w = text_width(&ctx, l, FontId::proportional(11.0)) + 12.0 + rw;
+                    assert!(w <= MAIN_W - 2.0 * MARGIN, "{lang:?} {r:?}: {w:.1}");
+                }
+            }
+            // The text lines of the Settings card wrap into at most three lines at 11.5 points.
+            for text in [
+                lang.t(Key::UpdateBlocked).to_string(),
+                lang.t(Key::UpdateNotWritable).to_string(),
+                update_error_text(lang, &update::UpdateError::Net),
+                update_error_text(lang, &update::UpdateError::Asset),
+                update_error_text(lang, &update::UpdateError::Hash),
+                update_error_text(lang, &update::UpdateError::Swap),
+                update_error_text(lang, &update::UpdateError::Restart),
+            ] {
+                let mut rows = 0;
+                let input = egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 600.0))),
+                    ..Default::default()
+                };
+                ctx.run_ui(input, |ui| {
+                    rows = ui
+                        .painter()
+                        .layout(
+                            text.clone(),
+                            FontId::proportional(11.5),
+                            LABEL_2,
+                            CARD_INNER,
+                        )
+                        .rows
+                        .len()
+                })
+                .drop_without_applying_deltas();
+                assert!(rows <= 3, "{lang:?} {text:?}: {rows} rows");
+            }
+            // The two buttons of a failure fit in one row of the card, or wrap without a cut.
+            let buttons = kit_button_width(&ctx, lang.t(Key::UpdateNow))
+                + kit_button_width(&ctx, lang.t(Key::UpdateOpenPage));
+            assert!(buttons <= 2.0 * CARD_INNER, "{lang:?}: {buttons:.1}");
+            // The tip with the longest tag stays short.
+            let tip = lang.fmt(Key::UpdateNowTip, &[&"v10.20.30-beta.4"]);
+            assert!(text_width(&ctx, &tip, FontId::proportional(13.0)) <= 2.0 * CARD_INNER);
+        }
+    }
+
+    /// The width of an accent button with this text.
+    fn kit_button_width(ctx: &egui::Context, text: &str) -> f32 {
+        let mut w = 0.0;
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 600.0))),
+            ..Default::default()
+        };
+        ctx.run_ui(input, |ui| w = kit::accent_button_width(ui, text))
+            .drop_without_applying_deltas();
+        w
     }
 }

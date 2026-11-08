@@ -44,7 +44,7 @@ Hexsight sends plain GET requests for public data files. It uses these hosts:
 - `data.aramkit.com`: augment stats, builds, and pairs.
 - `raw.githubusercontent.com`: fallback stats (aramhex-data).
 - `raw.communitydragon.org`: names and icons.
-- `api.github.com`: at most once a day, the number of the newest Hexsight release. The request has no data about you.
+- `api.github.com`: at most once a day, the number of the newest Hexsight release. The request has no data about you. When you click "Update now", Hexsight asks again for the release files, and downloads the new exe and its `.sha256` file from `github.com` (GitHub then sends the files from `objects.githubusercontent.com` or `release-assets.githubusercontent.com`). These requests have no data about you either. Hexsight checks the SHA-256 hash of the exe before it uses it. The hash file comes from the same release as the exe, so the check finds a damaged download, not a release that someone else took over. With "Check for new versions" off, Hexsight sends none of these requests.
 
 Each request has the user agent `Hexsight/0.1` with the address of this project. The path of a request shows your client language and the champion IDs that you open. The hosts also see your IP address, as every web server does. Each host keeps its own logs under its own privacy policy. Hexsight does not control them.
 
@@ -114,7 +114,7 @@ Hexsight herkese açık veri dosyalarını GET istekleriyle indirir. Şu sunucul
 - `data.aramkit.com`: eklenti istatistikleri, dizilimler ve eşleşmeler.
 - `raw.githubusercontent.com`: yedek istatistikler (aramhex-data).
 - `raw.communitydragon.org`: isimler ve simgeler.
-- `api.github.com`: en fazla günde bir kez, Hexsight'ın son sürümünün numarası. İstekte seninle ilgili hiçbir bilgi yok.
+- `api.github.com`: en fazla günde bir kez, Hexsight'ın son sürümünün numarası. İstekte seninle ilgili hiçbir bilgi yok. "Şimdi güncelle"ye basarsan Hexsight sürüm dosyalarını yeniden sorar, yeni exe'yi ve `.sha256` dosyasını `github.com` adresinden indirir (GitHub dosyaları `objects.githubusercontent.com` ya da `release-assets.githubusercontent.com` üzerinden gönderir). Bu isteklerde de seninle ilgili hiçbir bilgi yok. Hexsight exe'yi kullanmadan önce SHA-256 özetini kontrol eder. Özet dosyası exe ile aynı sürümden geldiği için bu kontrol bozuk bir indirmeyi yakalar, sürümü ele geçirilmiş bir hesabı yakalamaz. "Yeni sürüm var mı diye bak" kapalıyken Hexsight bu isteklerin hiçbirini göndermez.
 
 Her isteğin User-Agent başlığında `Hexsight/0.1` ve bu projenin adresi yer alır. İstek yolu, istemci dilini ve verisi istenen şampiyonların kimliklerini gösterir. Sunucular, her web sunucusu gibi IP adresini de görür. Her sunucu kendi gizlilik politikasına göre kendi kayıtlarını tutar. Hexsight onları denetleyemez.
 

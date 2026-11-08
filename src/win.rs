@@ -207,27 +207,134 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-/// Returns false when another Hexsight already runs. That copy comes to the front.
-pub fn single_instance() -> bool {
+/// The name of the mutex that keeps one copy of Hexsight.
+const INSTANCE_MUTEX: &str = r"Local\Hexsight.SingleInstance";
+
+/// Try to take the mutex of this name. `Some(handle)` means that this process owns it now
+/// (the handle stays open for the life of the process on purpose). `None` means that
+/// another process holds it. The handle of that failed try is closed here: a retry loop
+/// that leaked it would keep the mutex alive for ever.
+fn take_mutex(name: &str) -> Option<windows_sys::Win32::Foundation::HANDLE> {
     use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
     use windows_sys::Win32::System::Threading::CreateMutexW;
+    unsafe {
+        let name = wide(name);
+        let handle = CreateMutexW(std::ptr::null(), 0, name.as_ptr());
+        if GetLastError() != ERROR_ALREADY_EXISTS {
+            return Some(handle);
+        }
+        if !handle.is_null() {
+            CloseHandle(handle);
+        }
+        None
+    }
+}
+
+/// Bring the window of the running Hexsight to the front.
+fn focus_running_copy() {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         FindWindowW, SW_RESTORE, SetForegroundWindow, ShowWindow,
     };
     unsafe {
-        let name = wide(r"Local\Hexsight.SingleInstance");
-        // The handle stays open for the life of the process on purpose.
-        let _h = CreateMutexW(std::ptr::null(), 0, name.as_ptr());
-        if GetLastError() != ERROR_ALREADY_EXISTS {
-            return true;
-        }
         let title = wide("Hexsight");
         let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
         if !hwnd.is_null() {
             ShowWindow(hwnd, SW_RESTORE);
             SetForegroundWindow(hwnd);
         }
-        false
+    }
+}
+
+/// Returns false when another Hexsight already runs. That copy comes to the front.
+pub fn single_instance() -> bool {
+    if take_mutex(INSTANCE_MUTEX).is_some() {
+        return true;
+    }
+    focus_running_copy();
+    false
+}
+
+/// Like `single_instance`, for the copy that an update starts. The old copy is still
+/// closing, so the mutex is not free yet: try again every 200 ms for up to `timeout`.
+/// The old window stays where it is during the wait. When the time ends, it behaves
+/// as `single_instance`.
+pub fn single_instance_wait(timeout: std::time::Duration) -> bool {
+    wait_for_mutex(INSTANCE_MUTEX, timeout) || single_instance()
+}
+
+fn wait_for_mutex(name: &str, timeout: std::time::Duration) -> bool {
+    let end = std::time::Instant::now() + timeout;
+    loop {
+        if take_mutex(name).is_some() {
+            return true;
+        }
+        if std::time::Instant::now() >= end {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+}
+
+/// The event with which a copy that an update started tells the old copy "I am up".
+/// The name holds the id of the old process.
+fn ready_name(old_pid: u32) -> String {
+    format!(r"Local\Hexsight.UpdateReady.{old_pid}")
+}
+
+/// The event of the old copy. The new copy sets it. The handle closes on drop.
+pub struct ReadyEvent(windows_sys::Win32::Foundation::HANDLE);
+
+impl ReadyEvent {
+    /// Make the event of this process. Call it before the new copy starts.
+    pub fn create() -> Option<ReadyEvent> {
+        use windows_sys::Win32::System::Threading::CreateEventW;
+        let name = wide(&ready_name(std::process::id()));
+        let handle = unsafe { CreateEventW(std::ptr::null(), 1, 0, name.as_ptr()) };
+        (!handle.is_null()).then_some(ReadyEvent(handle))
+    }
+
+    /// True when the new copy has set the event.
+    pub fn is_set(&self) -> bool {
+        use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+        use windows_sys::Win32::System::Threading::WaitForSingleObject;
+        unsafe { WaitForSingleObject(self.0, 0) == WAIT_OBJECT_0 }
+    }
+}
+
+impl Drop for ReadyEvent {
+    fn drop(&mut self) {
+        unsafe { CloseHandle(self.0) };
+    }
+}
+
+/// The new copy tells the old one (by its process id) that it is up. Nothing happens when
+/// the old copy has no event, for example after a manual start with the argument.
+pub fn signal_ready(old_pid: u32) {
+    use windows_sys::Win32::System::Threading::{EVENT_MODIFY_STATE, OpenEventW, SetEvent};
+    unsafe {
+        let name = wide(&ready_name(old_pid));
+        let handle = OpenEventW(EVENT_MODIFY_STATE, 0, name.as_ptr());
+        if !handle.is_null() {
+            SetEvent(handle);
+            CloseHandle(handle);
+        }
+    }
+}
+
+/// Wait until the process with this id has ended, for `timeout` at most. True when it has
+/// ended. A process that cannot be opened (it is gone, or it is not ours) counts as ended.
+pub fn wait_for_exit(pid: u32, timeout: std::time::Duration) -> bool {
+    use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+    use windows_sys::Win32::System::Threading::{PROCESS_SYNCHRONIZE, WaitForSingleObject};
+    unsafe {
+        let handle = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
+        if handle.is_null() {
+            return true;
+        }
+        let ms = timeout.as_millis().min(u128::from(u32::MAX - 1)) as u32;
+        let ended = WaitForSingleObject(handle, ms) == WAIT_OBJECT_0;
+        CloseHandle(handle);
+        ended
     }
 }
 
@@ -628,5 +735,70 @@ mod tests {
     #[test]
     fn no_window_has_no_rect() {
         assert_eq!(window_rect(0), None);
+    }
+
+    #[test]
+    fn a_mutex_that_is_closed_can_be_taken_again() {
+        let name = format!(r"Local\Hexsight.Test.{}", std::process::id());
+        let first = take_mutex(&name).expect("the first try owns it");
+        // The mutex is held: every try fails, and none leaks a handle.
+        for _ in 0..5 {
+            assert!(take_mutex(&name).is_none());
+        }
+        assert!(!wait_for_mutex(
+            &name,
+            std::time::Duration::from_millis(250)
+        ));
+        // The owner lets go. Because the failed tries closed their handles, the next try wins.
+        unsafe { CloseHandle(first) };
+        assert!(take_mutex(&name).is_some());
+    }
+
+    #[test]
+    fn the_wait_ends_when_the_old_copy_lets_go_of_the_mutex() {
+        let name = format!(r"Local\Hexsight.Test.Wait.{}", std::process::id());
+        let held = take_mutex(&name).expect("owned") as usize;
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            unsafe { CloseHandle(held as windows_sys::Win32::Foundation::HANDLE) };
+        });
+        let t = std::time::Instant::now();
+        assert!(wait_for_mutex(&name, std::time::Duration::from_secs(10)));
+        assert!(t.elapsed() < std::time::Duration::from_secs(5));
+        releaser.join().unwrap();
+    }
+
+    #[test]
+    fn the_wait_for_a_process_sees_a_running_and_an_ended_process() {
+        // This test process runs: the wait times out.
+        assert!(!wait_for_exit(
+            std::process::id(),
+            std::time::Duration::from_millis(100)
+        ));
+        // A short command ends, so the wait returns early.
+        let mut child = std::process::Command::new("cmd")
+            .args(["/C", "exit", "0"])
+            .spawn()
+            .expect("cmd");
+        let pid = child.id();
+        assert!(wait_for_exit(pid, std::time::Duration::from_secs(10)));
+        let _ = child.wait();
+        // A process id that is gone counts as ended.
+        assert!(wait_for_exit(pid, std::time::Duration::from_millis(100)));
+    }
+
+    #[test]
+    fn the_new_copy_tells_the_old_one_that_it_is_up() {
+        // This process plays the old copy.
+        let event = ReadyEvent::create().expect("event");
+        assert!(!event.is_set());
+        // A signal for another process id changes nothing.
+        signal_ready(std::process::id().wrapping_add(1));
+        assert!(!event.is_set());
+        signal_ready(std::process::id());
+        assert!(event.is_set());
+        // Without an event, the signal does nothing and does not fail.
+        drop(event);
+        signal_ready(std::process::id());
     }
 }

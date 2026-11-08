@@ -93,14 +93,35 @@ fn ocr_file_test(path: &str) {
     let _ = std::fs::write(out_path, out);
 }
 
+/// How long a copy that an update started waits for the old process to end, and then for the
+/// single-instance mutex.
+const UPDATE_WAIT_EXIT: std::time::Duration = std::time::Duration::from_secs(15);
+const UPDATE_WAIT_MUTEX: std::time::Duration = std::time::Duration::from_secs(10);
+
 fn main() -> eframe::Result {
     if let Ok(p) = std::env::var("HEXSIGHT_OCR_FILE") {
         ocr_file_test(&p);
         return Ok(());
     }
-    // One copy only. A second start brings the first window to the front.
-    if !win::single_instance() {
+    // A copy that an update started waits for the old copy to end. Then the mutex is free.
+    // Without the argument, one copy only: a second start brings the first window to the front.
+    let started = match update::parse_updated_from(std::env::args()) {
+        Some(old_pid) => {
+            // First tell the old copy that this one runs. It keeps the old exe as a way back
+            // until it hears this.
+            win::signal_ready(old_pid);
+            win::wait_for_exit(old_pid, UPDATE_WAIT_EXIT);
+            win::single_instance_wait(UPDATE_WAIT_MUTEX)
+        }
+        None => win::single_instance(),
+    };
+    if !started {
         return Ok(());
+    }
+    // A half download of an earlier update goes now. The old exe stays until this copy has
+    // run well for a while (see `update::HEALTHY_RUN`).
+    if let Ok(exe) = std::env::current_exe() {
+        update::cleanup_download(&exe);
     }
     // The "Start with Windows" setting of the legacy app moves to the new name.
     // A portable copy leaves it alone.

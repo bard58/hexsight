@@ -191,6 +191,13 @@ pub struct Shared {
     /// The tag of a newer release (for example "v0.2.0"). `None` while this build
     /// is current, or no check has run.
     pub update: Option<String>,
+    /// What the one-click update does now. The data thread writes it, the window shows it.
+    pub update_state: update::UpdateState,
+    /// When `update_state` became a failure. The failure goes away after a while
+    /// (`UpdateError::show_for`), so the button comes back.
+    pub update_failed_at: Option<Instant>,
+    /// The new exe runs. The window saves its settings and ends this process.
+    pub update_quit: bool,
     /// Champions whose stats did not load: the time of the last try, and why.
     /// `no_stats` turns it into the text of the window. A stats refresh clears it.
     pub failed: HashMap<i64, (Instant, NoStats)>,
@@ -446,11 +453,15 @@ pub enum Cmd {
     ClearItemSets,
     /// Set League to Borderless through the client. Only the button "Fix" sends it.
     FixBorderless,
+    /// The button "Update now": download the new version, check it, replace the exe, restart.
+    UpdateNow,
 }
 
 enum DataCmd {
     Locale(String),
     Reload,
+    /// Run the one-click update (the poll thread has set the state already).
+    Update,
 }
 
 /// Work for the history thread.
@@ -599,8 +610,12 @@ fn data_loop(
                 static_retry = Instant::now();
                 next_stats = Instant::now();
             }
+            Ok(DataCmd::Update) => run_update(&shared, &ctx),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return,
+        }
+        if expire_failed_update(&mut shared.lock().unwrap(), Instant::now()) {
+            ctx.request_repaint();
         }
         let now = Instant::now();
         if loaded_loc.as_deref() != Some(want_loc.as_str()) && now >= static_retry {
@@ -653,7 +668,8 @@ fn data_loop(
             // A plain GET of the public release data. Nothing else leaves the PC. The cache file also keeps a restart from asking again within the day.
             let found = cache::get_json(&web, &update::api_url(update::REPO), update::CHECK_EVERY)
                 .and_then(|r| update::newer_tag(&r, update::VERSION));
-            shared.lock().unwrap().update = found;
+            let writable = found.is_none() || exe_folder_writable();
+            store_found_update(&shared, found, writable);
             ctx.request_repaint();
         }
         if forced && loaded_loc.is_some() && next_stats > now {
@@ -661,6 +677,359 @@ fn data_loop(
             forced = false;
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// The one-click update. The window sends `Cmd::UpdateNow`. The data thread downloads the
+// exe, so no thread starts for it. See `update.rs` for the pure parts.
+
+/// Why the update cannot start now, from the state of the shared data.
+fn update_block(s: &Shared) -> Result<(), update::Blocked> {
+    update::update_allowed(s.phase, s.game_window, s.live.level, false)
+}
+
+/// Keep the result of the daily check. A newer version in a folder that Hexsight cannot
+/// write to gets the "use the download page" state, because no click could work.
+fn store_found_update(shared: &Mutex<Shared>, found: Option<String>, writable: bool) {
+    let mut s = shared.lock().unwrap();
+    let found_one = found.is_some();
+    s.update = found;
+    if s.update_state.busy() {
+        return;
+    }
+    if !found_one {
+        s.update_state = update::UpdateState::Idle;
+        s.update_failed_at = None;
+    } else if !writable {
+        s.update_state = update::UpdateState::Failed(update::UpdateError::NotWritable);
+        s.update_failed_at = None;
+    } else if matches!(
+        s.update_state,
+        update::UpdateState::Failed(_)
+    ) {
+        // A new day, a new try: the button comes back. A failure that the player has to
+        // read (the old exe could not be put back) stays.
+        let stays = matches!(
+            &s.update_state,
+            update::UpdateState::Failed(e) if e.show_for().is_none() && *e != update::UpdateError::NotWritable
+        );
+        if !stays {
+            s.update_state = update::UpdateState::Idle;
+            s.update_failed_at = None;
+        }
+    }
+}
+
+/// Let an old failure go, so the button comes back. True when the state changed.
+fn expire_failed_update(s: &mut Shared, now: Instant) -> bool {
+    let (update::UpdateState::Failed(e), Some(at)) = (&s.update_state, s.update_failed_at) else {
+        return false;
+    };
+    match e.show_for() {
+        Some(span) if now.saturating_duration_since(at) >= span => {
+            s.update_state = update::UpdateState::Idle;
+            s.update_failed_at = None;
+            true
+        }
+        _ => false,
+    }
+}
+
+/// True when Hexsight can write next to its own exe.
+fn exe_folder_writable() -> bool {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(update::folder_writable))
+        .unwrap_or(false)
+}
+
+/// The click on "Update now", on the poll thread. It starts nothing in a champ select or a
+/// game, while an update runs, with the setting off, or with no newer version.
+fn start_update(shared: &Mutex<Shared>, data: &Sender<DataCmd>, ctx: &egui::Context) {
+    start_update_with(shared, data, ctx, update::live_port_open);
+}
+
+/// `start_update` with the look at port 2999 as a function, so a test needs no real port.
+fn start_update_with(
+    shared: &Mutex<Shared>,
+    data: &Sender<DataCmd>,
+    ctx: &egui::Context,
+    port_open: impl FnOnce() -> bool,
+) {
+    {
+        let s = shared.lock().unwrap();
+        if s.update_state.busy()
+            || !s.update_check
+            || s.update.is_none()
+            || update_block(&s).is_err()
+        {
+            return;
+        }
+    }
+    // A game opens port 2999 before the client says so. The look takes 200 ms at most and
+    // the lock is free meanwhile. No download starts, and the window says why.
+    if port_open() {
+        set_update_state(
+            shared,
+            ctx,
+            update::UpdateState::Failed(update::UpdateError::Busy),
+        );
+        return;
+    }
+    {
+        let mut s = shared.lock().unwrap();
+        if s.update_state.busy() {
+            return;
+        }
+        s.update_state = update::UpdateState::Downloading { done: 0, total: 0 };
+        s.update_failed_at = None;
+    }
+    let _ = data.send(DataCmd::Update);
+    ctx.request_repaint();
+}
+
+/// The checks before the swap: the setting is on, and no game or champ select runs (also
+/// not on port 2999, which a game opens before the client says so).
+fn update_guard(shared: &Mutex<Shared>) -> Result<(), update::UpdateError> {
+    {
+        let s = shared.lock().unwrap();
+        if !s.update_check || !update::repo_ready(update::REPO) {
+            return Err(update::UpdateError::Disabled);
+        }
+        update_block(&s).map_err(|_| update::UpdateError::Busy)?;
+    }
+    if update::live_port_open() {
+        return Err(update::UpdateError::Busy);
+    }
+    Ok(())
+}
+
+fn set_update_state(shared: &Mutex<Shared>, ctx: &egui::Context, state: update::UpdateState) {
+    {
+        let mut s = shared.lock().unwrap();
+        s.update_failed_at = matches!(state, update::UpdateState::Failed(_)).then(Instant::now);
+        s.update_state = state;
+    }
+    ctx.request_repaint();
+}
+
+/// An agent for the update. A download takes longer than the 20 seconds of the other
+/// agents: 10 minutes in all, so a slow line can finish, while a read that waits 30 seconds
+/// for data is the real stall guard. It follows no redirect itself: `get_checked` looks at
+/// each address first.
+fn update_agent() -> ureq::Agent {
+    crate::net::agent(
+        ureq::Agent::config_builder()
+            .timeout_global(Some(Duration::from_secs(600)))
+            .timeout_per_read(Some(Duration::from_secs(30)))
+            .max_redirects(0)
+            .user_agent(cache::user_agent())
+            .build(),
+    )
+}
+
+/// GET with the redirects checked by hand. The first address has to pass
+/// `download_url_ok`, each further one `redirect_ok`, and the chain has at most
+/// `MAX_HOPS` redirects. Only a 200 answer counts.
+fn get_checked(
+    agent: &ureq::Agent,
+    first: &str,
+) -> Result<ureq::http::Response<ureq::Body>, update::UpdateError> {
+    use update::UpdateError::Net;
+    let mut url = first.to_string();
+    for hop in 0..=update::MAX_HOPS {
+        let allowed = if hop == 0 {
+            update::download_url_ok(&url, update::REPO)
+        } else {
+            update::redirect_ok(&url)
+        };
+        if !allowed {
+            return Err(Net);
+        }
+        let resp = agent.get(&url).call().map_err(|_| Net)?;
+        match resp.status().as_u16() {
+            200 => return Ok(resp),
+            301 | 302 | 303 | 307 | 308 => {
+                let location = resp
+                    .headers()
+                    .get("location")
+                    .and_then(|v| v.to_str().ok())
+                    .ok_or(Net)?;
+                url = update::resolve_location(&url, location).ok_or(Net)?;
+            }
+            _ => return Err(Net),
+        }
+    }
+    Err(Net)
+}
+
+/// The answer of the releases API, fresh (not from the cache of the daily check).
+fn fetch_release(agent: &ureq::Agent) -> Result<serde_json::Value, update::UpdateError> {
+    let mut resp = agent
+        .get(&update::api_url(update::REPO))
+        .header("Accept", "application/vnd.github+json")
+        .call()
+        .map_err(|_| update::UpdateError::Net)?;
+    if resp.status().as_u16() != 200 {
+        return Err(update::UpdateError::Net);
+    }
+    resp.body_mut()
+        .with_config()
+        .limit(2_000_000)
+        .read_json()
+        .map_err(|_| update::UpdateError::Net)
+}
+
+/// Download the exe into `dest` and give back its hash. The state shows the progress,
+/// at most four times a second.
+fn download_exe(
+    agent: &ureq::Agent,
+    asset: &update::Asset,
+    dest: &Path,
+    shared: &Mutex<Shared>,
+    ctx: &egui::Context,
+) -> Result<[u8; 32], update::UpdateError> {
+    let mut resp = get_checked(agent, &asset.url)?;
+    if resp
+        .body()
+        .content_length()
+        .is_some_and(|n| n > update::MAX_EXE_BYTES)
+    {
+        return Err(update::UpdateError::TooBig);
+    }
+    let file = std::fs::File::create(dest).map_err(|_| update::UpdateError::Disk)?;
+    let sink = &file;
+    let reader = resp
+        .body_mut()
+        .with_config()
+        .limit(update::MAX_EXE_BYTES + 1)
+        .reader();
+    let mut last = Instant::now();
+    let (bytes, hash) = update::copy_hashed(reader, sink, update::MAX_EXE_BYTES, |done| {
+        if last.elapsed() >= Duration::from_millis(250) {
+            last = Instant::now();
+            set_update_state(
+                shared,
+                ctx,
+                update::UpdateState::Downloading {
+                    done,
+                    total: asset.size,
+                },
+            );
+        }
+    })?;
+    // The release says how big the file is. A short file is a cut connection.
+    update::check_size(bytes, asset.size)?;
+    // The bytes must be on the disk before the rename: a power loss after the swap must not
+    // leave a cut file under the name of the exe.
+    file.sync_all().map_err(|_| update::UpdateError::Disk)?;
+    Ok(hash)
+}
+
+/// The steps of the update. On `Ok` the new exe runs, and `update_quit` tells the window
+/// to end this process. On `Err` the old exe is in place and the download is gone.
+fn try_update(shared: &Mutex<Shared>, ctx: &egui::Context) -> Result<(), update::UpdateError> {
+    use update::UpdateError as E;
+    update_guard(shared)?;
+    let exe = std::env::current_exe().map_err(|_| E::Swap)?;
+    if !exe.parent().is_some_and(update::folder_writable) {
+        return Err(E::NotWritable);
+    }
+    let new = update::new_path(&exe);
+    let _ = std::fs::remove_file(&new);
+    let agent = update_agent();
+    let release = fetch_release(&agent)?;
+    // The release can change between the daily check and the click.
+    let tag = update::newer_tag(&release, update::VERSION).ok_or(E::UpToDate)?;
+    let asset = update::pick_asset(&release, &tag, update::REPO).ok_or(E::Asset)?;
+    // The hash file first: it is tiny, and a bad one saves the download.
+    let mut sha = get_checked(&agent, &asset.sha_url)?;
+    let sha = sha
+        .body_mut()
+        .with_config()
+        .limit(update::MAX_SHA_BYTES)
+        .read_to_string()
+        .map_err(|_| E::Net)?;
+    let want = update::parse_sha256(&sha, &asset.name).ok_or(E::Hash)?;
+    let got = match download_exe(&agent, &asset, &new, shared, ctx) {
+        Ok(hash) => hash,
+        Err(e) => {
+            let _ = std::fs::remove_file(&new);
+            return Err(e);
+        }
+    };
+    let finish = || {
+        set_update_state(shared, ctx, update::UpdateState::Verifying);
+        if got != want {
+            return Err(E::Hash);
+        }
+        if !update::looks_like_exe(&new) {
+            return Err(E::NotExe);
+        }
+        // A game may have started during the download.
+        update_guard(shared)?;
+        set_update_state(shared, ctx, update::UpdateState::Installing);
+        // The new copy has to prove that it runs before this one ends. Else the old exe
+        // comes back.
+        let ready = crate::win::ReadyEvent::create();
+        update::install_and_restart(
+            &exe,
+            &new,
+            |p| update::spawn_new(p, std::process::id()),
+            |child| watch_new_copy(child, ready.as_ref()),
+        )
+    };
+    let done = finish();
+    if done.is_err() {
+        let _ = std::fs::remove_file(&new);
+    }
+    done?;
+    shared.lock().unwrap().update_quit = true;
+    ctx.request_repaint();
+    Ok(())
+}
+
+/// The update, on the data thread. A failure shows in the window with the link to the
+/// download page. The setting off is no failure: nothing was sent, and the state resets.
+fn run_update(shared: &Mutex<Shared>, ctx: &egui::Context) {
+    let state = match try_update(shared, ctx) {
+        Ok(()) => update::UpdateState::Installing,
+        Err(update::UpdateError::Disabled) => update::UpdateState::Idle,
+        Err(update::UpdateError::UpToDate) => {
+            // No newer release exists any more: the note goes away.
+            shared.lock().unwrap().update = None;
+            update::UpdateState::Idle
+        }
+        Err(e) => update::UpdateState::Failed(e),
+    };
+    let done = state == update::UpdateState::Installing;
+    set_update_state(shared, ctx, state);
+    if done {
+        // The window saves its settings and closes. If it cannot (no frame runs, for
+        // example), this process ends here, so the new copy gets the mutex.
+        std::thread::sleep(QUIT_GRACE);
+        std::process::exit(0);
+    }
+}
+
+/// How long the window has to end the process after an update, before the data thread does.
+const QUIT_GRACE: Duration = Duration::from_secs(5);
+
+/// Watch the new copy after its start: it has to say that it is up (the ready event), and it
+/// must not end. The old copy keeps running while it watches.
+fn watch_new_copy(mut child: std::process::Child, ready: Option<&crate::win::ReadyEvent>) -> bool {
+    use update::StartProbe;
+    update::wait_for_start(
+        || match child.try_wait() {
+            Ok(None) if ready.is_some_and(|r| r.is_set()) => StartProbe::Up,
+            Ok(None) => StartProbe::Silent,
+            Ok(Some(_)) | Err(_) => StartProbe::Dead,
+        },
+        std::thread::sleep,
+        Duration::from_millis(100),
+        Duration::from_secs(1),
+        Duration::from_secs(10),
+    )
 }
 
 fn poll_loop(
@@ -1017,6 +1386,7 @@ fn poll_loop(
                     drop(s);
                     ctx.request_repaint();
                 }
+                Cmd::UpdateNow => start_update(&shared, &data, &ctx),
                 Cmd::Reload => {
                     let _ = data.send(DataCmd::Reload);
                     let mut s = shared.lock().unwrap();
@@ -3667,5 +4037,215 @@ WindowMode=2
         // Outside a Mayhem game the advice goes.
         suggest_pass(&shared, &ctx, Phase::InGame, Some(450));
         assert!(shared.lock().unwrap().advice.is_none());
+    }
+
+    // ---- The one-click update
+
+    /// Shared data with a newer version and the setting on.
+    fn update_shared(phase: Phase) -> Mutex<Shared> {
+        Mutex::new(Shared {
+            phase,
+            update_check: true,
+            update: Some("v0.2.0".into()),
+            ..Default::default()
+        })
+    }
+
+    /// What `start_update` does for this shared data: the state after the click, and the
+    /// number of commands that the data thread got.
+    fn click_update(shared: &Mutex<Shared>) -> (update::UpdateState, usize) {
+        let (tx, rx) = channel();
+        start_update_with(shared, &tx, &egui::Context::default(), || false);
+        let state = shared.lock().unwrap().update_state.clone();
+        (
+            state,
+            rx.try_iter()
+                .filter(|c| matches!(c, DataCmd::Update))
+                .count(),
+        )
+    }
+
+    #[test]
+    fn a_click_starts_the_update_once_in_a_calm_phase() {
+        for phase in [Phase::Offline, Phase::Idle, Phase::Lobby, Phase::PostGame] {
+            let shared = update_shared(phase);
+            let (state, sent) = click_update(&shared);
+            assert_eq!(
+                state,
+                update::UpdateState::Downloading { done: 0, total: 0 },
+                "{phase:?}"
+            );
+            assert_eq!(sent, 1, "{phase:?}");
+            // A second click while it runs sends nothing.
+            let (_, sent) = click_update(&shared);
+            assert_eq!(sent, 0, "{phase:?}");
+        }
+    }
+
+    #[test]
+    fn a_click_does_nothing_in_a_champ_select_or_a_game() {
+        for phase in [Phase::ChampSelect, Phase::InGame] {
+            let shared = update_shared(phase);
+            assert_eq!(
+                click_update(&shared),
+                (update::UpdateState::Idle, 0),
+                "{phase:?}"
+            );
+        }
+        // A game window or a level above 0 blocks in any phase.
+        let shared = update_shared(Phase::Idle);
+        shared.lock().unwrap().game_window = Some(true);
+        assert_eq!(click_update(&shared), (update::UpdateState::Idle, 0));
+        let shared = update_shared(Phase::Idle);
+        shared.lock().unwrap().live.level = 4;
+        assert_eq!(click_update(&shared), (update::UpdateState::Idle, 0));
+    }
+
+    #[test]
+    fn a_click_sends_nothing_with_the_setting_off_or_without_a_newer_version() {
+        let shared = update_shared(Phase::Idle);
+        shared.lock().unwrap().update_check = false;
+        assert_eq!(click_update(&shared), (update::UpdateState::Idle, 0));
+        let shared = update_shared(Phase::Idle);
+        shared.lock().unwrap().update = None;
+        assert_eq!(click_update(&shared), (update::UpdateState::Idle, 0));
+    }
+
+    #[test]
+    fn a_failed_update_can_be_tried_again() {
+        let shared = update_shared(Phase::Idle);
+        shared.lock().unwrap().update_state = update::UpdateState::Failed(update::UpdateError::Net);
+        let (state, sent) = click_update(&shared);
+        assert_eq!(
+            state,
+            update::UpdateState::Downloading { done: 0, total: 0 }
+        );
+        assert_eq!(sent, 1);
+    }
+
+    #[test]
+    fn an_open_live_port_stops_the_click_before_any_download() {
+        let shared = update_shared(Phase::Idle);
+        let (tx, rx) = channel();
+        start_update_with(&shared, &tx, &egui::Context::default(), || true);
+        let s = shared.lock().unwrap();
+        // No download state, no command: only the reason shows, and it goes away soon.
+        assert_eq!(
+            s.update_state,
+            update::UpdateState::Failed(update::UpdateError::Busy)
+        );
+        assert!(s.update_failed_at.is_some());
+        assert_eq!(rx.try_iter().count(), 0);
+    }
+
+    #[test]
+    fn a_failure_goes_away_after_its_time_and_the_button_comes_back() {
+        use update::{UpdateError as E, UpdateState as S};
+        let t0 = Instant::now();
+        let shared = update_shared(Phase::Idle);
+        let fail = |e: E| {
+            let mut s = shared.lock().unwrap();
+            s.update_state = S::Failed(e);
+            s.update_failed_at = Some(t0);
+        };
+        let tick = |secs: u64| {
+            expire_failed_update(&mut shared.lock().unwrap(), t0 + Duration::from_secs(secs))
+        };
+        let state = || shared.lock().unwrap().update_state.clone();
+        // A network error: the footer shows the page link for a few minutes, then the button.
+        fail(E::Net);
+        assert!(!tick(299) && state() == S::Failed(E::Net));
+        assert!(tick(300) && state() == S::Idle);
+        // The game reason goes quicker.
+        fail(E::Busy);
+        assert!(!tick(19));
+        assert!(tick(20) && state() == S::Idle);
+        // These stay: the player has to read them.
+        fail(E::NotWritable);
+        assert!(!tick(100_000) && state() == S::Failed(E::NotWritable));
+        fail(E::RollbackFailed("C:\\x.old".into()));
+        assert!(!tick(100_000));
+        // Other states are never touched.
+        shared.lock().unwrap().update_state = S::Downloading { done: 1, total: 2 };
+        assert!(!tick(100_000));
+    }
+
+    #[test]
+    fn the_guard_stops_the_swap_in_a_game_and_with_the_setting_off() {
+        let shared = update_shared(Phase::InGame);
+        assert_eq!(update_guard(&shared), Err(update::UpdateError::Busy));
+        let shared = update_shared(Phase::ChampSelect);
+        assert_eq!(update_guard(&shared), Err(update::UpdateError::Busy));
+        // The setting off means no request: the update ends without an error.
+        let shared = update_shared(Phase::Idle);
+        shared.lock().unwrap().update_check = false;
+        assert_eq!(update_guard(&shared), Err(update::UpdateError::Disabled));
+    }
+
+    #[test]
+    fn the_daily_check_keeps_the_state_of_the_update() {
+        use update::{UpdateError as E, UpdateState as S};
+        let shared = Mutex::new(Shared::default());
+        // A newer version in a folder that is read-only: only the download page helps.
+        store_found_update(&shared, Some("v0.2.0".into()), false);
+        assert_eq!(
+            shared.lock().unwrap().update_state,
+            S::Failed(E::NotWritable)
+        );
+        assert_eq!(shared.lock().unwrap().update.as_deref(), Some("v0.2.0"));
+        // The folder is writable again: the button comes back.
+        store_found_update(&shared, Some("v0.2.0".into()), true);
+        assert_eq!(shared.lock().unwrap().update_state, S::Idle);
+        // A failure of an update goes at the next daily check, so the button comes back.
+        shared.lock().unwrap().update_state = S::Failed(E::Hash);
+        store_found_update(&shared, Some("v0.2.0".into()), true);
+        assert_eq!(shared.lock().unwrap().update_state, S::Idle);
+        // One that the player has to read stays.
+        let rollback = S::Failed(E::RollbackFailed("C:\\x.old".into()));
+        shared.lock().unwrap().update_state = rollback.clone();
+        store_found_update(&shared, Some("v0.2.0".into()), true);
+        assert_eq!(shared.lock().unwrap().update_state, rollback);
+        shared.lock().unwrap().update_state = S::Idle;
+        // A running download is never reset by the check.
+        shared.lock().unwrap().update_state = S::Downloading { done: 5, total: 10 };
+        store_found_update(&shared, None, true);
+        assert_eq!(
+            shared.lock().unwrap().update_state,
+            S::Downloading { done: 5, total: 10 }
+        );
+        assert_eq!(shared.lock().unwrap().update, None);
+        // No newer version: the state is clean.
+        shared.lock().unwrap().update_state = S::Failed(E::Net);
+        store_found_update(&shared, None, true);
+        assert_eq!(shared.lock().unwrap().update_state, S::Idle);
+    }
+
+    #[test]
+    fn the_update_agent_follows_no_redirect_and_waits_long_enough_for_a_download() {
+        let agent = update_agent();
+        let config = agent.config();
+        assert_eq!(config.max_redirects(), 0);
+        assert_eq!(config.timeouts().global, Some(Duration::from_secs(600)));
+        assert_eq!(config.timeout_per_read(), Some(Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn an_address_outside_the_allow_list_is_refused_before_any_request() {
+        // The first address has to be a download of the repo on github.com. No request goes out.
+        for url in [
+            "http://github.com/bard58/hexsight/releases/download/v1/a.exe",
+            "https://evil.example/bard58/hexsight/releases/download/v1/a.exe",
+            "https://github.com/other/hexsight/releases/download/v1/a.exe",
+            "https://objects.githubusercontent.com/a",
+            "",
+        ] {
+            assert!(
+                matches!(
+                    get_checked(&update_agent(), url),
+                    Err(update::UpdateError::Net)
+                ),
+                "{url}"
+            );
+        }
     }
 }

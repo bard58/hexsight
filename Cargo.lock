@@ -840,6 +840,7 @@ dependencies = [
  "egui_extras",
  "image",
  "raw-window-handle",
+ "ring",
  "serde",
  "serde_json",
  "ureq",

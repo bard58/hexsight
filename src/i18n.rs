@@ -440,12 +440,28 @@ table! {
     // The button in About that really quits. The X of the window only hides it.
     QuitApp = "Quit Hexsight", "Hexsight’tan çık";
     // The update note and the feedback link.
-    UpdateShort = "Update available", "Yeni sürüm var";
     UpdateAvailable = "Update available: {0}", "Yeni sürüm var: {0}";
     UpdateTip = "Opens the download page", "İndirme sayfasını açar";
+    // The one-click update. {0} is a version tag, a percent, or the reason of a failure.
+    UpdateNow = "Update now", "Şimdi güncelle";
+    UpdateNowTip = "Downloads {0}, checks it, and restarts Hexsight.", "{0} sürümünü indirir, doğrular ve Hexsight’ı yeniden başlatır.";
+    UpdateDownloading = "Downloading… {0}%", "İndiriliyor… %{0}";
+    UpdateVerifying = "Checking the file…", "Dosya doğrulanıyor…";
+    UpdateInstalling = "Installing…", "Kuruluyor…";
+    UpdateBlocked = "Not during a game or champ select.", "Oyun ya da şampiyon seçimi sırasında güncellenmez.";
+    UpdateNotWritable = "Hexsight cannot write to its folder. Use the download page.", "Hexsight kendi klasörüne yazamıyor. İndirme sayfasını kullan.";
+    UpdateOpenPage = "Open the download page", "İndirme sayfasını aç";
+    UpdateFailed = "The update failed: {0}", "Güncelleme olmadı: {0}";
+    UpdateFailNet = "the download did not finish", "indirme tamamlanmadı";
+    UpdateFailHash = "the file did not pass the safety check", "dosya güvenlik kontrolünden geçmedi";
+    UpdateFailAsset = "this release has no file for your PC", "bu sürümde bilgisayarın için uygun dosya yok";
+    UpdateFailSwap = "the new file could not replace the old one", "yeni dosya eskisinin yerine geçemedi";
+    UpdateFailRestart = "the new version did not start, so the old one stays", "yeni sürüm açılmadı, eskisi yerinde kaldı";
+    // {0} is the path of the old exe, which the update could not put back.
+    UpdateFailRollback = "the old file is saved as {0}. Rename it back", "eski dosya şu adla kaldı: {0}. Adını geri değiştir";
     SetUpdateCheck = "Check for new versions", "Yeni sürüm var mı diye bak";
-    SetUpdateCheckNote = "At most once a day, Hexsight asks GitHub for the number of the latest version. It sends nothing else.",
-        "Hexsight en fazla günde bir kez GitHub’dan son sürümün numarasını sorar. Başka bir şey göndermez.";
+    SetUpdateCheckNote = "At most once a day, Hexsight asks GitHub for the latest version number and sends nothing else. Update now downloads that version.",
+        "Hexsight en fazla günde bir kez GitHub’dan son sürüm numarasını sorar, başka bir şey göndermez. Şimdi güncelle o sürümü indirir.";
     SendFeedback = "Send feedback", "Geri bildirim";
     SendFeedbackNote = "Opens a new GitHub page. Your Hexsight version, Windows version and main settings fill in the text. It holds no Riot ID and no file paths.",
         "GitHub’da yeni bir sayfa açar. Hexsight sürümün, Windows sürümün ve ana ayarların metne yazılır. Riot kimliğin ve dosya yolların yazılmaz.";
