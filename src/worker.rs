@@ -1314,7 +1314,7 @@ fn suggest_pass(shared: &Mutex<Shared>, ctx: &egui::Context, phase: Phase, queue
         }
     };
     let advice = work.map(|(sd, details, roster, gold, offered)| {
-        let summary = suggest::context(&roster, &sd);
+        let summary = suggest::context(&roster, &sd, &HashMap::new());
         let no_stats = ChampStats::default();
         // The Live Client does not give the augments that the player took, so none is known.
         let input = suggest::Input {
@@ -1325,6 +1325,12 @@ fn suggest_pass(shared: &Mutex<Shared>, ctx: &egui::Context, phase: Phase, queue
             sd: &sd,
             offered: &offered,
             known: &[],
+            stats: None,
+            killer: None,
+            recap: None,
+            prev_path: None,
+            prev_fed: None,
+            prev_rules: None,
         };
         suggest::advise(&input)
     });

@@ -1956,6 +1956,21 @@ fn reason_text(lang: Lang, sd: &StaticData, r: Reason) -> String {
             || lang.t(Key::ReasonPairsEarlier).to_string(),
             |a| lang.fmt(Key::ReasonPairs, &[&a.name]),
         ),
+        Reason::VsFed {
+            champion,
+            kills,
+            deaths,
+        } => lang.fmt(
+            Key::ReasonVsFed,
+            &[&champion_name(sd, champion), &format!("{kills}/{deaths}")],
+        ),
+        Reason::VsKiller { champion, times } if times >= 2 => lang.fmt(
+            Key::ReasonVsKillerN,
+            &[&champion_name(sd, champion), &times],
+        ),
+        Reason::VsKiller { champion, .. } => {
+            lang.fmt(Key::ReasonVsKiller, &[&champion_name(sd, champion)])
+        }
     }
 }
 
@@ -1964,6 +1979,15 @@ fn reason_text(lang: Lang, sd: &StaticData, r: Reason) -> String {
 fn cell_reason_text(lang: Lang, sd: &StaticData, r: Reason) -> String {
     match r {
         Reason::Pairs { .. } => lang.t(Key::ReasonPairsShort).to_string(),
+        Reason::VsFed {
+            champion,
+            kills,
+            deaths,
+        } => lang.fmt(
+            Key::ReasonVsFedCell,
+            &[&champion_name(sd, champion), &format!("{kills}/{deaths}")],
+        ),
+        Reason::VsKiller { .. } => lang.t(Key::ReasonVsKillerCell).to_string(),
         _ => reason_text(lang, sd, r),
     }
 }
@@ -11649,6 +11673,7 @@ mod tests {
                 healers: vec![6, 8],
                 tanks: vec![5, 3, 10],
                 enemies: 5,
+                foes: Vec::new(),
             }),
             has_gold: true,
             wanted: vec![2503, 4646],
@@ -12083,6 +12108,19 @@ mod tests {
                 reason_tip(lang, Reason::AntiHeal(2)),
                 lang.t(Key::TipReasonRule)
             );
+            for r in [
+                Reason::VsFed {
+                    champion: 4,
+                    kills: 9,
+                    deaths: 1,
+                },
+                Reason::VsKiller {
+                    champion: 4,
+                    times: 3,
+                },
+            ] {
+                assert_eq!(reason_tip(lang, r), lang.t(Key::TipReasonRule));
+            }
             assert_eq!(
                 reason_tip(
                     lang,

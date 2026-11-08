@@ -53,11 +53,11 @@ impl LangPref {
 /// of texts. Each line holds the English text and the Turkish text, so the two
 /// cannot slip out of line.
 macro_rules! table {
-    ($($key:ident = $en:literal, $tr:literal;)*) => {
+    ($($(#[$attr:meta])* $key:ident = $en:literal, $tr:literal;)*) => {
         /// One text of the interface.
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub enum Key {
-            $($key,)*
+            $($(#[$attr])* $key,)*
         }
 
         /// Every key, in table order. The tests walk it.
@@ -516,6 +516,81 @@ table! {
     FitLine = "Fits your build: {0}", "Dizilimine uyar: {0}";
     FitTip = "This augment is tied to an item in your build. Hexsight's own rule, not statistics.", "Bu eklenti dizilimindeki bir eşyaya bağlı. Hexsight’ın kendi kuralı, istatistik değil.";
 
+    // ---- Smarter item tips (v0.1.3). F0 adds them all at once; package D wires the ones that the
+    // window does not use yet, and drops the `allow` of each one it uses. Names are always in the
+    // nominative case, and no suffix follows a place.
+    // F1: the style line of the "Next items" card. {0} is an item name.
+    #[allow(dead_code)]
+    SuggestPath = "On your {0} path", "{0} yolundasın";
+    // F2: the fed enemy. {0} is a champion name, {1} its kills and deaths ("9/1").
+    ReasonVsFed = "vs fed {0} ({1})", "Fed rakip: {0} ({1})";
+    // `ReasonVsFed` in a cell of the overlay (the text fallback of the face).
+    ReasonVsFedCell = "{0} {1}", "{0} {1}";
+    // F2: the build kind of the fed enemy in the context line ("Fed: Caitlyn 9/1/4 · 3 crit items").
+    // {0} is a count. Several kind parts join with ", ".
+    #[allow(dead_code)]
+    CtxKindCrit = "{0} crit items", "{0} kritik eşyası";
+    #[allow(dead_code)]
+    CtxKindAp = "{0} AP items", "{0} AP eşyası";
+    #[allow(dead_code)]
+    CtxKindAd = "{0} AD items", "{0} AD eşyası";
+    #[allow(dead_code)]
+    CtxKindTank = "{0} resist items", "{0} direnç eşyası";
+    #[allow(dead_code)]
+    CtxKindHeals = "heals", "iyileşiyor";
+    // F4: the tooltip line of the summary card. {0} is your armor, {1} your magic resist.
+    #[allow(dead_code)]
+    TipMyStats = "You: {0} armor · {1} magic resist", "Sen: {0} zırh · {1} büyü direnci";
+    // F5: the recap line while dead. {0} is one name, or the names joined with `JoinAnd` or ", ".
+    // The window adds " · 9/2/4" and " · 85% AD" after it, and drops them first when the line is too wide.
+    #[allow(dead_code)]
+    RecapKilledBy = "Killed by {0}", "Seni {0} öldürdü";
+    // F5: the recap line for a repeat killer. {0} is a name, {1} the count (2 or more).
+    #[allow(dead_code)]
+    RecapRepeat = "{0} killed you {1} times", "{0} seni {1} kez öldürdü";
+    // F5: the reason of the killer rule on an item row. {0} is a name, {1} the count (2 or more).
+    ReasonVsKiller = "{0} killed you", "Seni {0} öldürdü";
+    ReasonVsKillerN = "{0} killed you {1} times", "{0} seni {1} kez öldürdü";
+    // `ReasonVsKiller` in a cell of the overlay.
+    ReasonVsKillerCell = "vs your killer", "seni öldürene karşı";
+    // F6: the short word after the enemy faces in an overlay cell.
+    #[allow(dead_code)]
+    CellTanky = "tanky", "tank";
+    #[allow(dead_code)]
+    CellAntiHeal = "anti-heal", "ağır yara";
+    #[allow(dead_code)]
+    CellMagic = "magic dmg", "büyü hasarı";
+    #[allow(dead_code)]
+    CellPhysical = "physical", "fiziksel";
+    #[allow(dead_code)]
+    CellKilledYou = "killed you", "seni öldürdü";
+    // {0} is the kills and deaths of the fed enemy ("9/1").
+    #[allow(dead_code)]
+    CellFed = "fed {0}", "fed {0}";
+    // The faces that do not fit. {0} is their count.
+    #[allow(dead_code)]
+    CellMore = "+{0}", "+{0}";
+    // F6: the reason of a team rule on an item row, with the names. {0} is the joined names.
+    #[allow(dead_code)]
+    ReasonTanksNamed = "{0} are tanky", "{0} tank";
+    #[allow(dead_code)]
+    ReasonHealersNamed = "{0} heal", "{0} iyileşiyor";
+    #[allow(dead_code)]
+    ReasonFedHealerNamed = "{0} is fed and heals", "{0} fed, iyileşiyor";
+    // {1} is the share (70% in English, %70 in Turkish).
+    #[allow(dead_code)]
+    ReasonVsApNamed = "{0}: {1} AP", "{0}: {1} AP";
+    #[allow(dead_code)]
+    ReasonVsAdNamed = "{0}: {1} AD", "{0}: {1} AD";
+    // Two names. Three or more join with ", ".
+    #[allow(dead_code)]
+    JoinAnd = "{0} and {1}", "{0} ve {1}";
+    // F7: the plan line under the picks. {0} and {1} are item names.
+    #[allow(dead_code)]
+    PlanThen = "Then: {0} → {1}", "Sonra: {0} → {1}";
+    #[allow(dead_code)]
+    PlanThenOne = "Then: {0}", "Sonra: {0}";
+
     // ---- Build styles (the archetypes of the data). Used in the title of an item set and on the build card.
     StyleAp = "AP", "AP";
     StyleAd = "AD", "AD";
@@ -770,6 +845,8 @@ mod tests {
         // The styles AP, AD and Tank are the same word in both languages, and so is the mix "70% AP · 30% AD".
         // "Fed" is the word Turkish players use too (the owner's choice).
         // March and May have the same short name in both languages ("Mar", "May").
+        // The tip texts that hold only names, a score line and a share read the same too ("Syndra 9/1",
+        // "fed 9/1", "+2", "Lux, Ahri: 70% AP").
         let same = [
             Key::LangEnglish,
             Key::LangTurkish,
@@ -778,6 +855,11 @@ mod tests {
             Key::StyleTank,
             Key::CtxMix,
             Key::CtxFed,
+            Key::ReasonVsFedCell,
+            Key::CellFed,
+            Key::CellMore,
+            Key::ReasonVsApNamed,
+            Key::ReasonVsAdNamed,
             Key::MonthMar,
             Key::MonthMay,
         ];
@@ -1173,6 +1255,121 @@ mod tests {
         assert!(
             Lang::En.t(Key::HiddenToast).contains("keeps running")
                 && Lang::Tr.t(Key::HiddenToast).contains("çalışıyor")
+        );
+    }
+
+    /// The keys of the smarter item tips (v0.1.3), with their exact texts: English, then Turkish.
+    const TIP_KEYS: &[(Key, &str, &str)] = &[
+        (Key::SuggestPath, "On your {0} path", "{0} yolundasın"),
+        (Key::ReasonVsFed, "vs fed {0} ({1})", "Fed rakip: {0} ({1})"),
+        (Key::ReasonVsFedCell, "{0} {1}", "{0} {1}"),
+        (Key::CtxKindCrit, "{0} crit items", "{0} kritik eşyası"),
+        (Key::CtxKindAp, "{0} AP items", "{0} AP eşyası"),
+        (Key::CtxKindAd, "{0} AD items", "{0} AD eşyası"),
+        (Key::CtxKindTank, "{0} resist items", "{0} direnç eşyası"),
+        (Key::CtxKindHeals, "heals", "iyileşiyor"),
+        (
+            Key::TipMyStats,
+            "You: {0} armor · {1} magic resist",
+            "Sen: {0} zırh · {1} büyü direnci",
+        ),
+        (Key::RecapKilledBy, "Killed by {0}", "Seni {0} öldürdü"),
+        (
+            Key::RecapRepeat,
+            "{0} killed you {1} times",
+            "{0} seni {1} kez öldürdü",
+        ),
+        (Key::ReasonVsKiller, "{0} killed you", "Seni {0} öldürdü"),
+        (
+            Key::ReasonVsKillerN,
+            "{0} killed you {1} times",
+            "{0} seni {1} kez öldürdü",
+        ),
+        (
+            Key::ReasonVsKillerCell,
+            "vs your killer",
+            "seni öldürene karşı",
+        ),
+        (Key::CellTanky, "tanky", "tank"),
+        (Key::CellAntiHeal, "anti-heal", "ağır yara"),
+        (Key::CellMagic, "magic dmg", "büyü hasarı"),
+        (Key::CellPhysical, "physical", "fiziksel"),
+        (Key::CellKilledYou, "killed you", "seni öldürdü"),
+        (Key::CellFed, "fed {0}", "fed {0}"),
+        (Key::CellMore, "+{0}", "+{0}"),
+        (Key::ReasonTanksNamed, "{0} are tanky", "{0} tank"),
+        (Key::ReasonHealersNamed, "{0} heal", "{0} iyileşiyor"),
+        (
+            Key::ReasonFedHealerNamed,
+            "{0} is fed and heals",
+            "{0} fed, iyileşiyor",
+        ),
+        (Key::ReasonVsApNamed, "{0}: {1} AP", "{0}: {1} AP"),
+        (Key::ReasonVsAdNamed, "{0}: {1} AD", "{0}: {1} AD"),
+        (Key::JoinAnd, "{0} and {1}", "{0} ve {1}"),
+        (Key::PlanThen, "Then: {0} → {1}", "Sonra: {0} → {1}"),
+        (Key::PlanThenOne, "Then: {0}", "Sonra: {0}"),
+    ];
+
+    #[test]
+    fn the_new_keys_exist_in_both_languages() {
+        for &(key, en, tr) in TIP_KEYS {
+            assert_eq!(Lang::En.t(key), en, "{key:?}");
+            assert_eq!(Lang::Tr.t(key), tr, "{key:?}");
+            // A name keeps the nominative case: no suffix, no apostrophe right after a place.
+            let text = Lang::Tr.t(key);
+            for n in 0..4 {
+                let place = format!("{{{n}}}");
+                if let Some(at) = text.find(&place) {
+                    let next = text[at + place.len()..].chars().next();
+                    assert!(
+                        next.is_none_or(|c| matches!(c, ' ' | ':' | ',' | ')' | '.')),
+                        "{key:?}: a suffix after {place} in {text}"
+                    );
+                }
+            }
+            // No tip text names a rate.
+            for lang in [Lang::En, Lang::Tr] {
+                let low = lang.t(key).to_lowercase();
+                for bad in ["win", "kazan", "pick rate", "seçilme", "%"] {
+                    assert!(!low.contains(bad), "{lang:?} {key:?}: {low}");
+                }
+            }
+        }
+        // The texts fill their places: names in the nominative, a share with the sign of the language.
+        assert_eq!(
+            Lang::Tr.fmt(Key::ReasonVsFed, &[&"Syndra", &"9/1"]),
+            "Fed rakip: Syndra (9/1)"
+        );
+        assert_eq!(
+            Lang::En.fmt(Key::ReasonVsFed, &[&"Syndra", &"9/1"]),
+            "vs fed Syndra (9/1)"
+        );
+        assert_eq!(
+            Lang::Tr.fmt(
+                Key::RecapKilledBy,
+                &[&Lang::Tr.fmt(Key::JoinAnd, &[&"Zed", &"Lux"])]
+            ),
+            "Seni Zed ve Lux öldürdü"
+        );
+        assert_eq!(
+            Lang::En.fmt(Key::RecapRepeat, &[&"Zed", &3]),
+            "Zed killed you 3 times"
+        );
+        assert_eq!(
+            Lang::Tr.fmt(
+                Key::ReasonVsApNamed,
+                &[&"Vel'Koz, Lux", &Lang::Tr.pct(70.0, 0)]
+            ),
+            "Vel'Koz, Lux: %70 AP"
+        );
+        assert_eq!(
+            Lang::Tr.fmt(Key::SuggestPath, &[&"Malignance"]),
+            "Malignance yolundasın"
+        );
+        assert_eq!(
+            Lang::En.fmt(Key::PlanThen, &[&"Rabadon's Deathcap", &"Void Staff"]),
+            "Then: Rabadon's Deathcap → Void Staff"
         );
     }
 

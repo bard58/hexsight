@@ -19,6 +19,19 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
+// The child modules. Each one has an owner package and holds its hooks of `rank` and `advise`.
+// `rank` stays here and calls them; the children read the private items of this module.
+mod path;
+pub mod recap;
+pub mod stats;
+#[cfg(test)]
+pub(crate) mod testkit;
+mod threat;
+
+pub use recap::{Killer, Recap};
+pub use stats::MyStats;
+use threat::Rules;
+
 // ---------------------------------------------------------------------------
 // The constants. All of them are first values: a placeholder, to tune on real
 // games (as `CONF_HIGH` in app.rs). The tests pin the behavior, and the exact
@@ -70,6 +83,16 @@ const FINISHED_GOLD: u32 = 2000;
 const BASIC_BOOTS_GOLD: u32 = 300;
 /// An item with more tags than this is no clear item of any kind: no rule touches it.
 const MAX_RULE_TAGS: u8 = 6;
+/// At most this many items that a rule adds (injects) in one pass. Order: killer, fed, healer, mix.
+const MAX_INJECTS: usize = 2;
+/// The priority of a rule reason on a tie of points: the lower one wins.
+#[allow(dead_code)] // F0: package A uses it in `threat::triggers`.
+const PRIO_KILLER: u8 = 0;
+#[allow(dead_code)] // F0: package A uses it in `threat::triggers`.
+const PRIO_FED: u8 = 1;
+const PRIO_ANTI_HEAL: u8 = 2;
+const PRIO_PEN: u8 = 3;
+const PRIO_RESIST: u8 = 4;
 /// How many levels of the recipe tree Hexsight follows.
 const RECIPE_DEPTH: u8 = 4;
 /// The most items in a suggestion.
@@ -259,6 +282,42 @@ pub struct Fed {
     pub level: u8,
 }
 
+/// The build kind of an enemy, with the count of its items of that kind (2 or more).
+/// `threat::foe_kind` decides it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[allow(dead_code)] // F0: package A builds the kinds in `threat::foe_kind`.
+pub enum FoeKind {
+    #[default]
+    None,
+    Crit(u8),
+    Ap(u8),
+    Ad(u8),
+    /// Items with armor or magic resist and no damage.
+    Tank(u8),
+}
+
+/// One known enemy: its score line, its items in short, and its build kind. It holds no name.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[allow(dead_code)] // F0: packages A and D read the fields.
+pub struct Foe {
+    pub champion: i64,
+    pub kills: u16,
+    pub deaths: u16,
+    pub assists: u16,
+    pub level: u8,
+    pub dead: bool,
+    /// The finished non-boots items (`FINISHED_GOLD` or more).
+    pub finished: u8,
+    /// The weighted gold of ability power and attack damage of the enemy (`share_of`): the prior of
+    /// its champion as `PRIOR_GOLD`, plus the gold of its damage items. The AP share of the foe is
+    /// `ap_gold / (ap_gold + ad_gold)`.
+    pub ap_gold: u32,
+    pub ad_gold: u32,
+    pub kind: FoeKind,
+    /// The enemy heals a lot (`is_healer`).
+    pub heals: bool,
+}
+
 /// What the enemy team looks like. Every part is Hexsight's own estimate, not statistics.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GameContext {
@@ -266,12 +325,15 @@ pub struct GameContext {
     /// fewer than `MIX_MIN_ENEMIES` known enemy champions.
     pub ap_pct: Option<u8>,
     pub fed: Option<Fed>,
-    /// The champions of the enemies that heal a lot.
+    /// The champions of the enemies that heal a lot: the fed enemy first, then by kills (most
+    /// first), then by champion id.
     pub healers: Vec<i64>,
     /// The champions of the enemies that have a lot of armor or magic resist.
     pub tanks: Vec<i64>,
     /// How many enemies the roster has.
     pub enemies: u8,
+    /// One entry for each known enemy (champion id above 0), by champion id.
+    pub foes: Vec<Foe>,
 }
 
 fn is_fed(p: &Player) -> bool {
@@ -352,8 +414,40 @@ fn is_tanky(sd: &StaticData, p: &Player) -> bool {
     resist >= 2 || (tank_role && resist >= 1)
 }
 
-/// The summary of the enemy team: the damage mix, the fed enemy, the healers and the tanks.
-pub fn context(roster: &Roster, sd: &StaticData) -> GameContext {
+/// The weighted (ability power, attack damage) gold of a player: its prior as `PRIOR_GOLD`, plus the
+/// gold of its damage items. The prior is the magic share of the champion's own data in `shares`
+/// (0 to 1) when it is there, and the guess from the role (`prior`) when not.
+fn share_of(sd: &StaticData, p: &Player, shares: &HashMap<i64, f32>) -> (f32, f32) {
+    let (prior_ap, prior_ad) = shares
+        .get(&p.champion)
+        .map(|&m| {
+            let m = m.clamp(0.0, 1.0);
+            (m, 1.0 - m)
+        })
+        .unwrap_or_else(|| prior(sd, p.champion));
+    let (gold_ap, gold_ad) = item_gold(sd, &p.items);
+    (
+        prior_ap * PRIOR_GOLD + gold_ap,
+        prior_ad * PRIOR_GOLD + gold_ad,
+    )
+}
+
+/// The finished non-boots items of a player: `FINISHED_GOLD` or more.
+fn finished_items(sd: &StaticData, items: &[i64]) -> usize {
+    items
+        .iter()
+        .filter(|&id| {
+            sd.item_info
+                .get(id)
+                .is_some_and(|i| i.total >= FINISHED_GOLD && i.cats & cat::BOOTS == 0)
+        })
+        .count()
+}
+
+/// The summary of the enemy team: the damage mix, the fed enemy, the healers, the tanks and the
+/// foes. `shares` holds the magic share of each enemy champion from its own data (by champion id),
+/// and an empty map uses the role of each champion.
+pub fn context(roster: &Roster, sd: &StaticData, shares: &HashMap<i64, f32>) -> GameContext {
     let enemies: Vec<&Player> = roster.enemies().collect();
     let mut out = GameContext {
         enemies: enemies.len().min(255) as u8,
@@ -365,12 +459,8 @@ pub fn context(roster: &Roster, sd: &StaticData) -> GameContext {
     let (mut sum, mut weights, mut known) = (0.0, 0.0, 0);
     for p in enemies.iter().filter(|p| p.champion > 0) {
         known += 1;
-        let (prior_ap, prior_ad) = prior(sd, p.champion);
+        let (ap, ad) = share_of(sd, p, shares);
         let (gold_ap, gold_ad) = item_gold(sd, &p.items);
-        let (ap, ad) = (
-            prior_ap * PRIOR_GOLD + gold_ap,
-            prior_ad * PRIOR_GOLD + gold_ad,
-        );
         let gold = (gold_ap + gold_ad).max(PRIOR_GOLD);
         let weight = gold * if is_fed(p) { FED_WEIGHT } else { 1.0 };
         sum += weight * ap / (ap + ad);
@@ -392,16 +482,48 @@ pub fn context(roster: &Roster, sd: &StaticData) -> GameContext {
             assists: p.assists,
             level: p.level,
         });
-    out.healers = enemies
+    // The healers: the fed enemy first, then the most kills, then the lower id.
+    let fed = out.fed.map(|f| f.champion);
+    let mut healers: Vec<&Player> = enemies
         .iter()
+        .copied()
         .filter(|p| p.champion > 0 && is_healer(sd, p))
-        .map(|p| p.champion)
         .collect();
+    healers.sort_by_key(|p| {
+        (
+            Some(p.champion) != fed,
+            std::cmp::Reverse(p.kills),
+            p.champion,
+        )
+    });
+    out.healers = healers.iter().map(|p| p.champion).collect();
     out.tanks = enemies
         .iter()
         .filter(|p| p.champion > 0 && is_tanky(sd, p))
         .map(|p| p.champion)
         .collect();
+    // The foes, by champion id. The sort is stable, so two of the same champion keep the roster order.
+    out.foes = enemies
+        .iter()
+        .filter(|p| p.champion > 0)
+        .map(|p| {
+            let (ap, ad) = share_of(sd, p, shares);
+            Foe {
+                champion: p.champion,
+                kills: p.kills,
+                deaths: p.deaths,
+                assists: p.assists,
+                level: p.level,
+                dead: p.dead,
+                finished: finished_items(sd, &p.items).min(255) as u8,
+                ap_gold: ap.round() as u32,
+                ad_gold: ad.round() as u32,
+                kind: threat::foe_kind(sd, p),
+                heals: is_healer(sd, p),
+            }
+        })
+        .collect();
+    out.foes.sort_by_key(|f| f.champion);
     out
 }
 
@@ -435,6 +557,19 @@ pub enum Reason {
         augment: i64,
         known: bool,
     },
+    /// Against the fed enemy: its champion and its kills and deaths.
+    #[allow(dead_code)] // F0: package A gives it in `threat::triggers`.
+    VsFed {
+        champion: i64,
+        kills: u8,
+        deaths: u8,
+    },
+    /// Against the enemy that killed you, and how many times it did.
+    #[allow(dead_code)] // F0: package A gives it in `threat::triggers`.
+    VsKiller {
+        champion: i64,
+        times: u8,
+    },
 }
 
 impl Reason {
@@ -442,9 +577,24 @@ impl Reason {
     pub fn is_rule(self) -> bool {
         matches!(
             self,
-            Reason::VsAp(_) | Reason::VsAd(_) | Reason::AntiHeal(_) | Reason::VsTanks(_)
+            Reason::VsAp(_)
+                | Reason::VsAd(_)
+                | Reason::AntiHeal(_)
+                | Reason::VsTanks(_)
+                | Reason::VsFed { .. }
+                | Reason::VsKiller { .. }
         )
     }
+}
+
+/// Which team rules fired in a pass: the input of the hysteresis of the next pass
+/// (`Input::prev_rules`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RuleState {
+    pub vs_ap: bool,
+    pub vs_ad: bool,
+    pub tanks: bool,
+    pub healers: bool,
 }
 
 /// One suggested item.
@@ -478,16 +628,35 @@ pub struct Advice {
     /// The items you could still want: the suggested ones, and the core and later items of the
     /// build, minus what you own. The mark "fits your build" looks here.
     pub wanted: Vec<i64>,
+    /// The index of the build path that you follow, when the path tracker is sure of it. The worker
+    /// passes it back as `Input::prev_path`. No weight of the path is here.
+    pub path: Option<u16>,
+    /// The item that names the path on the card ("On your Malignance path").
+    pub path_item: Option<i64>,
+    /// Up to two items after the picks ("Then: X → Y"). Not in `signature`.
+    pub plan: Vec<i64>,
+    /// The fed enemy when the fed rule fired. The worker passes it back as `Input::prev_fed`.
+    pub fed_rule: Option<i64>,
+    /// The recap of your current death (`Input::recap`).
+    pub recap: Option<Recap>,
+    /// Your own armor and magic resist, rounded, when the Live Client gave both.
+    pub my_stats: Option<(u16, u16)>,
+    /// The team rules that fired. The worker passes it back as `Input::prev_rules`.
+    pub rules: RuleState,
 }
 
 impl Advice {
-    /// A number that changes when the list of items changes. The overlay pops up for a while
-    /// after such a change. It ignores `ready`: that flag flips when the gold reaches a price,
-    /// which often happens after a kill in a fight, and the card must not grow then.
+    /// A number that changes when the list of items or the killers of the recap change. The overlay
+    /// pops up for a while after such a change. It ignores `ready`: that flag flips when the gold
+    /// reaches a price, which often happens after a kill in a fight, and the card must not grow then.
+    /// It ignores the path and the plan too, because the overlay shows neither.
     pub fn signature(&self) -> u64 {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         for p in &self.items {
             p.id.hash(&mut h);
+        }
+        if let Some(r) = &self.recap {
+            r.killers.hash(&mut h);
         }
         h.finish()
     }
@@ -505,6 +674,21 @@ pub struct Input<'a> {
     pub offered: &'a [i64],
     /// The augments that Hexsight knows you took. The Live Client does not give them, so this is empty.
     pub known: &'a [i64],
+    /// Your own armor, magic resist and health, from `activeplayer`.
+    pub stats: Option<MyStats>,
+    /// The enemy that killed you (now, or as the nemesis), for the killer rule.
+    #[allow(dead_code)] // F0: package A reads it in `threat::triggers`.
+    pub killer: Option<Killer>,
+    /// The recap of your current death. `advise` copies it into `Advice::recap`.
+    pub recap: Option<&'a Recap>,
+    /// `Advice::path` of the last pass, for the hysteresis of the path tracker.
+    #[allow(dead_code)] // F0: package C reads it in `path::data_cands`.
+    pub prev_path: Option<u16>,
+    /// `Advice::fed_rule` of the last pass, so a fed enemy that dies once keeps the rule.
+    #[allow(dead_code)] // F0: package A reads it in `threat::triggers`.
+    pub prev_fed: Option<i64>,
+    /// `Advice::rules` of the last pass, for the hysteresis of the team rules.
+    pub prev_rules: Option<RuleState>,
 }
 
 /// Your items and the items that they were before an upgrade in the game: Muramana counts as Manamune too.
@@ -668,31 +852,61 @@ fn shrink(points: i32, owned: usize) -> i32 {
     }
 }
 
-/// The rules that fire, from the game context.
-#[derive(Clone, Copy, Default)]
-struct Rules {
-    vs_ap: Option<u8>,
-    vs_ad: Option<u8>,
-    healers: Option<u8>,
-    tanks: Option<u8>,
+/// The bonus of a resist rule for one bit: `min(shrink(resist, owned), round(resist * factor))`,
+/// with the factor of your own resist (`stats::factor`). It is computed once for each bit.
+fn resist_bonus(resist: i32, owned: usize, have: Option<f32>) -> i32 {
+    shrink(resist, owned).min((resist as f32 * stats::factor(have)).round() as i32)
 }
 
-impl Rules {
-    fn of(ctx: Option<&GameContext>) -> Self {
-        let Some(c) = ctx else { return Self::default() };
-        Rules {
-            vs_ap: c.ap_pct.filter(|&ap| ap >= MIX_RULE_PCT),
-            vs_ad: c.ap_pct.map(|ap| 100 - ap).filter(|&ad| ad >= MIX_RULE_PCT),
-            // Two healers, or one healer that is the fed enemy.
-            healers: Some(c.healers.len())
-                .filter(|&n| {
-                    n >= RULE_MIN_COUNT
-                        || (n >= 1 && c.fed.is_some_and(|f| c.healers.contains(&f.champion)))
-                })
-                .map(|n| n.min(255) as u8),
-            tanks: Some(c.tanks.len())
-                .filter(|&n| n >= RULE_MIN_COUNT)
-                .map(|n| n.min(255) as u8),
+/// A rule that can add a resist item: the resist bit (`cat::MR` or `cat::ARMOR`), the reason, the
+/// inject list for your class (the first item that the shop sells comes in), and the priority of its
+/// reason on a tie. The points are the bonus of the bit in `Pass` (`Pass::bonus`). The first trigger
+/// that adds an item for a bit is the only one for that bit.
+#[allow(dead_code)] // F0: package A builds triggers in `threat::triggers`.
+struct Trigger {
+    bit: u16,
+    reason: Reason,
+    list: &'static [i64],
+    priority: u8,
+}
+
+/// The points that a rule gives to one candidate. `resist` hits of one item combine with `max()`,
+/// the other hits add up. On a tie of points, the lower `priority` gives the reason.
+#[allow(dead_code)] // F0: package A builds extra hits in `threat::hits`.
+struct Hit {
+    points: i32,
+    priority: u8,
+    reason: Reason,
+    resist: bool,
+}
+
+/// What one pass of `rank` knows before its candidates. The hooks of the child modules read it.
+#[allow(dead_code)] // F0: the hooks of packages A and C read the fields.
+struct Pass<'a> {
+    input: &'a Input<'a>,
+    /// The build that fits your items, and its index in `details.builds` (the style).
+    build: &'a Build,
+    build_at: usize,
+    class: Class,
+    tank: bool,
+    /// Your items with their earlier forms (`with_earlier_forms`).
+    held: Vec<i64>,
+    /// How many finished non-boots items you own, and whether you own a finished pair of boots.
+    finished: usize,
+    owns_boots: bool,
+    /// The bonus of each resist bit, after `shrink` and `stats::factor`.
+    mr_bonus: i32,
+    armor_bonus: i32,
+    rules: Rules,
+}
+
+impl Pass<'_> {
+    /// The bonus of a resist bit: `mr_bonus` for `cat::MR`, `armor_bonus` for `cat::ARMOR`, else 0.
+    fn bonus(&self, bit: u16) -> i32 {
+        match bit {
+            cat::MR => self.mr_bonus,
+            cat::ARMOR => self.armor_bonus,
+            _ => 0,
         }
     }
 }
@@ -723,7 +937,7 @@ enum Fate {
 
 /// A candidate with its score.
 #[derive(Debug)]
-struct Scored {
+pub(crate) struct Scored {
     id: i64,
     score: i32,
     price: u32,
@@ -735,13 +949,19 @@ struct Scored {
 }
 
 /// The scored candidates of `advise`, best first, with the numbers that the tests check.
-struct Ranking {
+pub(crate) struct Ranking {
     scored: Vec<Scored>,
     build: usize,
     /// At least one candidate fell out because the slots are full.
     no_slot: bool,
     /// How many finished items you own.
     finished: usize,
+    /// The team rules that fired.
+    rules: RuleState,
+    /// The fed enemy when the fed rule fired.
+    fed_rule: Option<i64>,
+    /// The path that drove the candidates, when the path tracker found one.
+    path: Option<path::PathPick>,
 }
 
 fn rank(input: &Input) -> Ranking {
@@ -750,12 +970,7 @@ fn rank(input: &Input) -> Ranking {
     let owned: &[i64] = &me.items;
     let info = |id: i64| sd.item_info.get(&id);
     let built_in: HashSet<i64> = owned.iter().flat_map(|&id| recipe_tree(sd, id)).collect();
-    let finished = owned
-        .iter()
-        .filter(|&&id| {
-            info(id).is_some_and(|i| i.total >= FINISHED_GOLD && i.cats & cat::BOOTS == 0)
-        })
-        .count();
+    let finished = finished_items(sd, owned);
     let free_slots = 6usize.saturating_sub(owned.len());
     // The basic Boots are no pair yet: their upgrades stay on the list.
     let owns_boots = owned.iter().any(|&id| {
@@ -763,11 +978,12 @@ fn rank(input: &Input) -> Ranking {
             i.cats & cat::BOOTS != 0 && (i.total > BASIC_BOOTS_GOLD || !i.from.is_empty())
         })
     });
-    let build_at = pick_build(builds, &with_earlier_forms(sd, owned));
+    let held = with_earlier_forms(sd, owned);
+    let build_at = pick_build(builds, &held);
     let build = &builds[build_at];
     let class = class_of(sd, build, details);
     let tank = is_tank_build(sd, build);
-    let rules = Rules::of(input.ctx);
+    let rules = Rules::of(input.ctx, input.prev_rules);
     // The finished items that you own with one of these tags. Boots do not count.
     let owned_with = |bits: u16| {
         owned
@@ -779,7 +995,7 @@ fn rank(input: &Input) -> Ranking {
             })
             .count()
     };
-    // The bonus of each rule, less for each such item that you own.
+    // The bonus of each rule, less for each such item that you own, and less with your own resist.
     let resist = if tank
         || matches!(
             build.name.to_ascii_lowercase().as_str(),
@@ -789,14 +1005,57 @@ fn rank(input: &Input) -> Ranking {
     } else {
         RESIST_CARRY
     };
-    let mr_bonus = shrink(resist, owned_with(cat::MR));
-    let armor_bonus = shrink(resist, owned_with(cat::ARMOR));
+    let stats = input.stats.unwrap_or_default();
+    let pass = Pass {
+        input,
+        build,
+        build_at,
+        class,
+        tank,
+        held,
+        finished,
+        owns_boots,
+        mr_bonus: resist_bonus(resist, owned_with(cat::MR), stats.mr),
+        armor_bonus: resist_bonus(resist, owned_with(cat::ARMOR), stats.armor),
+        rules,
+    };
     let pen = match class {
         Class::Ap => cat::MAGIC_PEN,
         Class::Ad => cat::ARMOR_PEN,
         Class::Mixed => 0,
     };
     let pen_bonus = shrink(PEN_BONUS, owned_with(pen));
+
+    // The resist triggers, in inject order: the killer and the fed enemy, then the damage mix.
+    let threat = threat::triggers(&pass);
+    let class_list = |[tank_list, ap_list, ad_list]: [&'static [i64]; 3]| -> &'static [i64] {
+        if tank {
+            tank_list
+        } else {
+            match class {
+                Class::Ap => ap_list,
+                Class::Ad => ad_list,
+                Class::Mixed => &[],
+            }
+        }
+    };
+    let mut threat_triggers = threat.triggers;
+    let mut mix_triggers: Vec<Trigger> = Vec::new();
+    mix_triggers.extend(rules.vs_ap.map(|ap| Trigger {
+        bit: cat::MR,
+        reason: Reason::VsAp(ap),
+        list: class_list([&MR_TANK, &MR_AP, &MR_AD]),
+        priority: PRIO_RESIST,
+    }));
+    mix_triggers.extend(rules.vs_ad.map(|ad| Trigger {
+        bit: cat::ARMOR,
+        reason: Reason::VsAd(ad),
+        list: class_list([&ARMOR_TANK, &ARMOR_AP, &ARMOR_AD]),
+        priority: PRIO_RESIST,
+    }));
+    // A bonus of 0 gives no hit and no inject.
+    threat_triggers.retain(|t| pass.bonus(t.bit) > 0);
+    mix_triggers.retain(|t| pass.bonus(t.bit) > 0);
 
     let fate = |id: i64| -> Fate {
         let Some(i) = info(id) else { return Fate::Out };
@@ -814,15 +1073,23 @@ fn rank(input: &Input) -> Ranking {
         }
     };
 
-    // Step 1: the candidates, each with its base score and its data reason.
+    // Step 1: the candidates, each with its base score and its data reason. A path that drives the
+    // card gives the core, later and other-build candidates. Without one, the build gives them.
     let mut cands: HashMap<i64, Cand> = HashMap::new();
-    for (i, &id) in build.items.iter().enumerate() {
-        put(
-            &mut cands,
-            id,
-            CORE_BASE - CORE_STEP * i as i32,
-            Reason::Core(i as u8 + 1),
-        );
+    let path = path::data_cands(&pass);
+    if let Some(p) = &path {
+        for &(id, base, reason) in &p.cands {
+            put(&mut cands, id, base, reason);
+        }
+    } else {
+        for (i, &id) in build.items.iter().enumerate() {
+            put(
+                &mut cands,
+                id,
+                CORE_BASE - CORE_STEP * i as i32,
+                Reason::Core(i as u8 + 1),
+            );
+        }
     }
     if !build.boots_skipped {
         // The boots come in pick rate order: the most played pair gets the higher score, so a tie
@@ -836,31 +1103,37 @@ fn rank(input: &Input) -> Ranking {
             put(&mut cands, id, base - BOOTS_STEP * i as i32, Reason::Boots);
         }
     }
-    for (j, &id) in build.later.iter().take(8).enumerate() {
-        put(
-            &mut cands,
-            id,
-            LATER_BASE - LATER_STEP * j as i32,
-            Reason::Later,
-        );
+    if path.is_none() {
+        for (j, &id) in build.later.iter().take(8).enumerate() {
+            put(
+                &mut cands,
+                id,
+                LATER_BASE - LATER_STEP * j as i32,
+                Reason::Later,
+            );
+        }
     }
-    if let Some(row) = details.slots.get(finished) {
+    // The slot lists count the boots: with a finished pair, your next item is one slot further.
+    let slot = finished + usize::from(owns_boots);
+    if let Some(row) = details.slots.get(slot) {
         for (k, &id) in row.iter().take(4).enumerate() {
             put(
                 &mut cands,
                 id,
                 SLOT_BASE - SLOT_STEP * k as i32,
-                Reason::Slot(finished as u8 + 1),
+                Reason::Slot(slot as u8 + 1),
             );
         }
     }
-    for (k, &id) in build.situational.iter().take(6).enumerate() {
-        put(
-            &mut cands,
-            id,
-            OTHER_BASE - OTHER_STEP * k as i32,
-            Reason::OtherBuild,
-        );
+    if path.is_none() {
+        for (k, &id) in build.situational.iter().take(6).enumerate() {
+            put(
+                &mut cands,
+                id,
+                OTHER_BASE - OTHER_STEP * k as i32,
+                Reason::OtherBuild,
+            );
+        }
     }
     // Items that the data ties to an augment come in even when the build lacks them.
     for l in details.aug_links.iter().filter(|l| l.strong()) {
@@ -886,6 +1159,29 @@ fn rank(input: &Input) -> Ranking {
             );
         }
     }
+
+    // The injects: a rule adds an item when the candidates lack one of its kind. At most
+    // `MAX_INJECTS` in one pass, in the order killer, fed, healer, mix, and one for each resist bit.
+    let mut injects = 0;
+    let has_resist = |cands: &HashMap<i64, Cand>, bit: u16| {
+        cands.keys().any(|&id| {
+            info(id).is_some_and(|i| i.cats & bit != 0 && i.tags <= MAX_RULE_TAGS)
+                && fate(id) == Fate::Stays
+        })
+    };
+    let inject_resist = |cands: &mut HashMap<i64, Cand>, t: &Trigger, injects: &mut usize| {
+        if *injects < MAX_INJECTS
+            && !has_resist(cands, t.bit)
+            && let Some(&id) = t.list.iter().find(|&&id| fate(id) == Fate::Stays)
+        {
+            put(cands, id, RESIST_BASE, t.reason);
+            *injects += 1;
+        }
+    };
+    // The killer and the fed enemy.
+    for t in &threat_triggers {
+        inject_resist(&mut cands, t, &mut injects);
+    }
     // Healers: add the anti-heal item of your class when the candidates have none and you own none.
     if let Some(n) = rules.healers {
         let have = cands
@@ -905,46 +1201,16 @@ fn rank(input: &Input) -> Ranking {
         };
         if !have
             && !own
+            && injects < MAX_INJECTS
             && let Some(&id) = list.iter().find(|&&id| fate(id) == Fate::Stays)
         {
             put(&mut cands, id, ANTI_HEAL_BASE, Reason::AntiHeal(n));
+            injects += 1;
         }
     }
-    // A resist rule: add the resist item of your class when no candidate has that resist.
-    let resist_rules = [
-        (
-            rules.vs_ap.map(Reason::VsAp),
-            cat::MR,
-            mr_bonus,
-            [&MR_TANK[..], &MR_AP, &MR_AD],
-        ),
-        (
-            rules.vs_ad.map(Reason::VsAd),
-            cat::ARMOR,
-            armor_bonus,
-            [&ARMOR_TANK[..], &ARMOR_AP, &ARMOR_AD],
-        ),
-    ];
-    for (reason, bit, bonus, [tank_list, ap_list, ad_list]) in resist_rules {
-        let Some(reason) = reason.filter(|_| bonus > 0) else {
-            continue;
-        };
-        let have = cands.keys().any(|&id| {
-            info(id).is_some_and(|i| i.cats & bit != 0 && i.tags <= MAX_RULE_TAGS)
-                && fate(id) == Fate::Stays
-        });
-        let list: &[i64] = if tank {
-            tank_list
-        } else {
-            match class {
-                Class::Ap => ap_list,
-                Class::Ad => ad_list,
-                Class::Mixed => &[],
-            }
-        };
-        if !have && let Some(&id) = list.iter().find(|&&id| fate(id) == Fate::Stays) {
-            put(&mut cands, id, RESIST_BASE, reason);
-        }
+    // The damage mix: add the resist item of your class when no candidate has that resist.
+    for t in &mix_triggers {
+        inject_resist(&mut cands, t, &mut injects);
     }
 
     // Step 2: drop what cannot be bought, then add the bonuses.
@@ -964,32 +1230,55 @@ fn rank(input: &Input) -> Ranking {
         if recipe_tree(sd, c.id).iter().any(|p| owned.contains(p)) {
             score += STABLE;
         }
-        // The rules. Each hit is (points, priority for a tie, reason). An item with many tags is left alone.
-        let mut hits: Vec<(i32, u8, Reason)> = Vec::new();
+        // The rules. An item with many tags is left alone. The resist hits of all triggers combine
+        // with `max()`; the other hits add up.
+        let mut hits: Vec<Hit> = Vec::new();
         if item.tags <= MAX_RULE_TAGS {
-            if let Some(ap) = rules
-                .vs_ap
-                .filter(|_| item.cats & cat::MR != 0 && mr_bonus > 0)
+            for t in threat_triggers
+                .iter()
+                .chain(&mix_triggers)
+                .filter(|t| item.cats & t.bit != 0)
             {
-                hits.push((mr_bonus, 2, Reason::VsAp(ap)));
-            }
-            if let Some(ad) = rules
-                .vs_ad
-                .filter(|_| item.cats & cat::ARMOR != 0 && armor_bonus > 0)
-            {
-                hits.push((armor_bonus, 2, Reason::VsAd(ad)));
+                hits.push(Hit {
+                    points: pass.bonus(t.bit),
+                    priority: t.priority,
+                    reason: t.reason,
+                    resist: true,
+                });
             }
             if let Some(n) = rules.healers.filter(|_| is_anti_heal(c.id)) {
-                hits.push((ANTI_HEAL_BONUS, 0, Reason::AntiHeal(n)));
+                hits.push(Hit {
+                    points: ANTI_HEAL_BONUS,
+                    priority: PRIO_ANTI_HEAL,
+                    reason: Reason::AntiHeal(n),
+                    resist: false,
+                });
             }
             if let Some(n) = rules
                 .tanks
                 .filter(|_| item.cats & pen != 0 && pen_bonus > 0)
             {
-                hits.push((pen_bonus, 1, Reason::VsTanks(n)));
+                hits.push(Hit {
+                    points: pen_bonus,
+                    priority: PRIO_PEN,
+                    reason: Reason::VsTanks(n),
+                    resist: false,
+                });
             }
+            hits.extend(threat::hits(&pass, c.id, item));
         }
-        let rule: i32 = hits.iter().map(|h| h.0).sum();
+        let resist_points = hits
+            .iter()
+            .filter(|h| h.resist)
+            .map(|h| h.points)
+            .max()
+            .unwrap_or(0);
+        let rule: i32 = resist_points
+            + hits
+                .iter()
+                .filter(|h| !h.resist)
+                .map(|h| h.points)
+                .sum::<i32>();
         score += rule;
         // Augment links: a known augment adds more than an offered one. A link is the share of the players
         // with the augment who buy the item. The win rate of the pair is not read.
@@ -1005,12 +1294,12 @@ fn rank(input: &Input) -> Ranking {
                 score += OFFERED_BONUS;
             }
         }
-        // The reason to show: a known pair, then a rule (the largest, and a tie goes to anti-heal, then
-        // penetration, then resist), then an offered pair, then the data reason.
+        // The reason to show: a known pair, then a rule (the largest, and a tie goes to the lower
+        // priority: killer, fed, anti-heal, penetration, resist), then an offered pair, then the data reason.
         let rule_reason = hits
             .iter()
-            .max_by_key(|h| (h.0, std::cmp::Reverse(h.1)))
-            .map(|h| h.2);
+            .max_by_key(|h| (h.points, std::cmp::Reverse(h.priority)))
+            .map(|h| h.reason);
         let reason = known_pair
             .map(|augment| Reason::Pairs {
                 augment,
@@ -1047,6 +1336,9 @@ fn rank(input: &Input) -> Ranking {
         build: build_at,
         no_slot,
         finished,
+        rules: rules.state(),
+        fed_rule: threat.fed_rule,
+        path,
     }
 }
 
@@ -1061,6 +1353,13 @@ pub fn advise(input: &Input) -> Advice {
         ctx: input.ctx.cloned(),
         me_dead: input.me.dead,
         has_gold: input.gold.is_some(),
+        recap: input.recap.cloned(),
+        my_stats: input.stats.and_then(|s| {
+            Some((
+                s.armor?.round().max(0.0) as u16,
+                s.mr?.round().max(0.0) as u16,
+            ))
+        }),
         ..Default::default()
     };
     if input.details.builds.is_empty() {
@@ -1103,17 +1402,28 @@ pub fn advise(input: &Input) -> Advice {
         })
         .collect();
     out.slots_full = ranking.no_slot && out.items.is_empty() && owned.len() >= 6;
+    out.rules = ranking.rules;
+    out.fed_rule = ranking.fed_rule;
     let held = with_earlier_forms(input.sd, owned);
+    // The items you could still want: from the path when one drives the card, else from the build.
+    let build_items: Vec<i64> = match &ranking.path {
+        Some(p) => p.wanted.clone(),
+        None => build.items.iter().chain(&build.later).copied().collect(),
+    };
     let mut wanted: Vec<i64> = out
         .items
         .iter()
         .map(|p| p.id)
-        .chain(build.items.iter().chain(&build.later).copied())
+        .chain(build_items)
         .filter(|id| !held.contains(id))
         .collect();
     wanted.sort_unstable();
     wanted.dedup();
     out.wanted = wanted;
+    out.path = ranking.path.as_ref().and_then(|p| p.path);
+    out.path_item = ranking.path.as_ref().and_then(|p| p.item);
+    let picks: Vec<i64> = out.items.iter().map(|p| p.id).collect();
+    out.plan = path::plan(input, build, ranking.path.as_ref(), &picks);
     out
 }
 
@@ -1135,134 +1445,7 @@ pub fn fit_item(details: &ChampStats, wanted: &[i64], augment: i64) -> Option<i6
 mod tests {
     use super::*;
 
-    const HEIMER: &str = include_str!("../tests/fixtures/heimerdinger-suggest.json");
-    const ITEMS: &str = include_str!("../tests/fixtures/items-trimmed.json");
-    const PLAYERLIST: &str = include_str!("../tests/fixtures/playerlist.json");
-
-    // The champions of the fake games: id, name and alias, with the first role.
-    const CHAMPIONS: [(i64, &str, &str); 11] = [
-        (1, "Ahri", "mage"),
-        (2, "Jinx", "marksman"),
-        (3, "Garen", "fighter"),
-        (4, "Zed", "assassin"),
-        (5, "Malphite", "tank"),
-        (6, "Soraka", "support"),
-        (7, "Lux", "mage"),
-        (8, "Yuumi", "support"),
-        (9, "Nasus", "fighter"),
-        (10, "Blitzcrank", "tank"),
-        (74, "Heimerdinger", "mage"),
-    ];
-
-    fn sd() -> StaticData {
-        let (items, item_info) = data::parse_items(&serde_json::from_str(ITEMS).unwrap());
-        let mut out = StaticData {
-            items,
-            item_info,
-            ..Default::default()
-        };
-        for (id, alias, role) in CHAMPIONS {
-            out.champions.insert(
-                id,
-                Champion {
-                    id,
-                    name: alias.into(),
-                    alias: alias.into(),
-                    icon: String::new(),
-                },
-            );
-            out.roles.insert(id, vec![role.into()]);
-        }
-        out
-    }
-
-    fn heimer() -> ChampStats {
-        data::kit_champion(&serde_json::from_str(HEIMER).unwrap())
-    }
-
-    /// A champion with one build: the style, the core and the later items.
-    fn with_build(name: &str, core: &[i64], later: &[i64]) -> ChampStats {
-        ChampStats {
-            builds: vec![Build {
-                name: name.into(),
-                items: core.to_vec(),
-                later: later.to_vec(),
-                ..Default::default()
-            }],
-            ..Default::default()
-        }
-    }
-
-    fn me(items: &[i64]) -> Player {
-        Player {
-            champion: 74,
-            side: Side::Order,
-            items: items.to_vec(),
-            level: 9,
-            ..Default::default()
-        }
-    }
-
-    fn enemy(champion: i64, items: &[i64]) -> Player {
-        Player {
-            champion,
-            side: Side::Chaos,
-            items: items.to_vec(),
-            level: 9,
-            ..Default::default()
-        }
-    }
-
-    fn scored_enemy(champion: i64, items: &[i64], k: u16, d: u16, a: u16) -> Player {
-        Player {
-            kills: k,
-            deaths: d,
-            assists: a,
-            ..enemy(champion, items)
-        }
-    }
-
-    fn roster(enemies: Vec<Player>) -> Roster {
-        let mut players = vec![me(&[])];
-        players.extend(enemies);
-        Roster { players, me: 0 }
-    }
-
-    fn input<'a>(me: &'a Player, details: &'a ChampStats, sd: &'a StaticData) -> Input<'a> {
-        Input {
-            me,
-            gold: None,
-            ctx: None,
-            details,
-            sd,
-            offered: &[],
-            known: &[],
-        }
-    }
-
-    /// Like `input`, for a player who owns these items. The player lives for the rest of the test run.
-    fn input_of<'a>(items: &[i64], details: &'a ChampStats, sd: &'a StaticData) -> Input<'a> {
-        let player: &'a Player = Box::leak(Box::new(me(items)));
-        input(player, details, sd)
-    }
-
-    fn ids(a: &Advice) -> Vec<i64> {
-        a.items.iter().map(|p| p.id).collect()
-    }
-
-    fn score_of(r: &Ranking, id: i64) -> Option<i32> {
-        r.scored.iter().find(|s| s.id == id).map(|s| s.score)
-    }
-
-    fn ctx(ap_pct: Option<u8>, healers: usize, tanks: usize) -> GameContext {
-        GameContext {
-            ap_pct,
-            healers: (0..healers as i64).map(|i| 100 + i).collect(),
-            tanks: (0..tanks as i64).map(|i| 200 + i).collect(),
-            enemies: 5,
-            ..Default::default()
-        }
-    }
+    use super::testkit::*;
 
     // ---- The player list.
 
@@ -1389,8 +1572,7 @@ mod tests {
         // gold of the game is a float, a potion has no `consumable` flag, an item slot can be skipped
         // (the slots 0, 1 and 4), the trinket is in the slot 6, and a champion can be one that
         // Hexsight does not know (Player2 here: its name is lost to the replacement, so the alias fits no champion).
-        let list: Value =
-            serde_json::from_str(include_str!("../tests/fixtures/playerlist-real.json")).unwrap();
+        let list: Value = serde_json::from_str(PLAYERLIST_REAL).unwrap();
         let aliases = [
             "Ashe", "Akali", "Rammus", "Jinx", "Velkoz", "Kaisa", "Amumu", "Nautilus", "Caitlyn",
         ];
@@ -1433,7 +1615,7 @@ mod tests {
         // A potion has no flag in this list, so it stays among the items (it holds a slot in the game).
         assert_eq!(r.players[3].items, vec![3118, 2031, 3020]);
         // The summary and the roster work on it with no data of items: no panic, three enemies known at least.
-        let c = context(&r, &StaticData::default());
+        let c = context_of(&r, &StaticData::default());
         assert_eq!(c.enemies, 5);
     }
 
@@ -1494,7 +1676,7 @@ mod tests {
         let sd = sd();
         // Three mages, no items: all ability power.
         let none = roster(vec![enemy(1, &[]), enemy(7, &[]), enemy(1, &[])]);
-        assert_eq!(context(&none, &sd).ap_pct, Some(100));
+        assert_eq!(context_of(&none, &sd).ap_pct, Some(100));
         // The prior is worth 1500 gold. 3000 gold of attack damage items (Black Cleaver) take it to a third:
         // 1500 / (1500 + 3000) is 33 %, and the mix goes in steps of 5.
         let bought = roster(vec![
@@ -1502,17 +1684,17 @@ mod tests {
             enemy(7, &[3071]),
             enemy(1, &[3071]),
         ]);
-        assert_eq!(context(&bought, &sd).ap_pct, Some(35));
+        assert_eq!(context_of(&bought, &sd).ap_pct, Some(35));
         // A mixed team: mage 100, marksman 0, fighter 25. The mean is 41.7 %, which rounds to 40.
         let mixed = roster(vec![enemy(1, &[]), enemy(2, &[]), enemy(3, &[])]);
-        assert_eq!(context(&mixed, &sd).ap_pct, Some(40));
+        assert_eq!(context_of(&mixed, &sd).ap_pct, Some(40));
         // Boots, health, armor and a potion add no damage.
         let tanky = roster(vec![
             enemy(1, &[3111, 3075, 2003]),
             enemy(1, &[]),
             enemy(1, &[]),
         ]);
-        assert_eq!(context(&tanky, &sd).ap_pct, Some(100));
+        assert_eq!(context_of(&tanky, &sd).ap_pct, Some(100));
         // An item with both tags (Nashor's Tooth: attack speed and ability power) adds half to each.
         let (ap, ad) = item_gold(&sd, &[3115]);
         assert_eq!(ap, ad);
@@ -1528,21 +1710,21 @@ mod tests {
             enemy(2, &[]),
             enemy(3, &[]),
         ]);
-        assert_eq!(context(&calm, &sd).ap_pct, Some(40));
+        assert_eq!(context_of(&calm, &sd).ap_pct, Some(40));
         // The mage goes 9/2: its weight is 1.5, so the mean is (1.5 + 0 + 0.25) / 3.5 = 50 %.
         let fed = roster(vec![
             scored_enemy(1, &[], 9, 2, 4),
             enemy(2, &[]),
             enemy(3, &[]),
         ]);
-        assert_eq!(context(&fed, &sd).ap_pct, Some(50));
+        assert_eq!(context_of(&fed, &sd).ap_pct, Some(50));
         // The weight does not hide the other champions: a fed marksman moves the mix to attack damage.
         let adc = roster(vec![
             enemy(1, &[]),
             scored_enemy(2, &[], 9, 2, 4),
             enemy(3, &[]),
         ]);
-        assert_eq!(context(&adc, &sd).ap_pct, Some(35));
+        assert_eq!(context_of(&adc, &sd).ap_pct, Some(35));
     }
 
     #[test]
@@ -1567,7 +1749,7 @@ mod tests {
             enemy(1, &[]),
             enemy(2, &[]),
         ]);
-        let fed = context(&r, &sd()).fed.unwrap();
+        let fed = context_of(&r, &sd()).fed.unwrap();
         assert_eq!(
             fed,
             Fed {
@@ -1579,7 +1761,7 @@ mod tests {
             }
         );
         assert!(
-            context(
+            context_of(
                 &roster(vec![scored_enemy(4, &[], 5, 0, 0), enemy(1, &[])]),
                 &sd()
             )
@@ -1597,13 +1779,13 @@ mod tests {
             scored_enemy(3, &[], 7, 5, 0),
         ]);
         // 6/0 is net 6, 8/1 is net 7, 9/2 is net 7, and 7/5 is not fed. The tie of 8/1 and 9/2 goes to the 9 kills.
-        assert_eq!(context(&r, &sd()).fed.map(|f| f.champion), Some(2));
+        assert_eq!(context_of(&r, &sd()).fed.map(|f| f.champion), Some(2));
         // A higher net beats more kills.
         let r = roster(vec![
             scored_enemy(1, &[], 12, 5, 0),
             scored_enemy(2, &[], 8, 0, 0),
         ]);
-        assert_eq!(context(&r, &sd()).fed.map(|f| f.champion), Some(2));
+        assert_eq!(context_of(&r, &sd()).fed.map(|f| f.champion), Some(2));
     }
 
     #[test]
@@ -1619,14 +1801,15 @@ mod tests {
             enemy(8, &[]),
             enemy(5, &[]),
         ]);
-        assert_eq!(context(&r, &sd).healers, vec![6, 3, 8]);
+        // No enemy is fed and all have 0 kills: the healers come by id.
+        assert_eq!(context_of(&r, &sd).healers, vec![3, 6, 8]);
         // The alias match ignores case, and a champion without an alias entry is no healer.
         let mut low = sd;
         low.champions.get_mut(&2).unwrap().alias = "soraka".into();
-        assert_eq!(context(&r, &low).healers, vec![6, 3, 2, 8]);
+        assert_eq!(context_of(&r, &low).healers, vec![2, 3, 6, 8]);
         // An enemy that Hexsight cannot name is not counted, whatever it owns.
         assert!(
-            context(&roster(vec![enemy(0, &[3072])]), &low)
+            context_of(&roster(vec![enemy(0, &[3072])]), &low)
                 .healers
                 .is_empty()
         );
@@ -1645,16 +1828,16 @@ mod tests {
         ]);
         // The first has two. The second has one and no tank role. The third is a tank with one. The fourth has none.
         // The fifth has Mercury's Treads, which are boots and do not count.
-        assert_eq!(context(&r, &sd).tanks, vec![3, 5]);
+        assert_eq!(context_of(&r, &sd).tanks, vec![3, 5]);
         // Health items without resist do not count, and Frozen Heart and Thornmail both do.
         assert_eq!(
-            context(&roster(vec![enemy(3, &[2504, 3110])]), &sd)
+            context_of(&roster(vec![enemy(3, &[2504, 3110])]), &sd)
                 .tanks
                 .len(),
             1
         );
         assert!(
-            context(&roster(vec![enemy(3, &[3071, 3074])]), &sd)
+            context_of(&roster(vec![enemy(3, &[3071, 3074])]), &sd)
                 .tanks
                 .is_empty()
         );
@@ -1664,12 +1847,12 @@ mod tests {
     fn the_mix_needs_three_known_enemies() {
         let sd = sd();
         assert_eq!(
-            context(&roster(vec![enemy(1, &[]), enemy(2, &[])]), &sd).ap_pct,
+            context_of(&roster(vec![enemy(1, &[]), enemy(2, &[])]), &sd).ap_pct,
             None
         );
         // An enemy that Hexsight cannot name does not count as known.
         assert_eq!(
-            context(
+            context_of(
                 &roster(vec![enemy(1, &[]), enemy(2, &[]), enemy(0, &[])]),
                 &sd
             )
@@ -1677,7 +1860,7 @@ mod tests {
             None
         );
         assert!(
-            context(
+            context_of(
                 &roster(vec![enemy(1, &[]), enemy(2, &[]), enemy(3, &[])]),
                 &sd
             )
@@ -1686,7 +1869,7 @@ mod tests {
         );
         // The count of enemies includes the unknown one.
         assert_eq!(
-            context(&roster(vec![enemy(1, &[]), enemy(0, &[])]), &sd).enemies,
+            context_of(&roster(vec![enemy(1, &[]), enemy(0, &[])]), &sd).enemies,
             2
         );
         // Your team is no enemy.
@@ -1695,7 +1878,7 @@ mod tests {
             side: Side::Order,
             ..enemy(7, &[])
         });
-        assert_eq!(context(&r, &sd).enemies, 3);
+        assert_eq!(context_of(&r, &sd).enemies, 3);
     }
 
     #[test]
@@ -2378,7 +2561,7 @@ mod tests {
             (&[3008], false),
             (&[3072], true),
         ] {
-            let c = context(&roster(vec![enemy(3, items)]), &sd);
+            let c = context_of(&roster(vec![enemy(3, items)]), &sd);
             assert_eq!(c.healers.contains(&3), healer, "{items:?}");
         }
     }
@@ -2389,7 +2572,7 @@ mod tests {
         let mut d = heimer();
         d.builds[0].later.retain(|&id| id != 3165);
         let anti_heal = |enemies: Vec<Player>| {
-            let c = context(&roster(enemies), &sd);
+            let c = context_of(&roster(enemies), &sd);
             let mut i = input_of(&[], &d, &sd);
             i.ctx = Some(&c);
             rank(&i)
@@ -2471,7 +2654,7 @@ mod tests {
             enemy(2, &[]),
             enemy(6, &[]),
         ]);
-        assert_eq!(context(&r, &sd).ap_pct, Some(90));
+        assert_eq!(context_of(&r, &sd).ap_pct, Some(90));
         // A tank with resist items only weighs as the prior: the same mix as with no items.
         let bare = roster(vec![enemy(5, &[]), enemy(1, &[]), enemy(2, &[])]);
         let tanky = roster(vec![
@@ -2479,7 +2662,10 @@ mod tests {
             enemy(1, &[]),
             enemy(2, &[]),
         ]);
-        assert_eq!(context(&tanky, &sd).ap_pct, context(&bare, &sd).ap_pct);
+        assert_eq!(
+            context_of(&tanky, &sd).ap_pct,
+            context_of(&bare, &sd).ap_pct
+        );
     }
 
     #[test]
@@ -2628,7 +2814,7 @@ mod tests {
         // Zhonya's Hourglass, Banshee's Veil, Death's Dance and Maw of Malmortius give resist with damage.
         for items in [&[3157, 6333][..], &[3102, 3156], &[3075, 6333]] {
             assert!(
-                context(&roster(vec![enemy(3, items)]), &sd)
+                context_of(&roster(vec![enemy(3, items)]), &sd)
                     .tanks
                     .is_empty(),
                 "{items:?}"
@@ -2636,13 +2822,13 @@ mod tests {
         }
         // A tank with one of them is no tanky enemy either.
         assert!(
-            context(&roster(vec![enemy(5, &[3157])]), &sd)
+            context_of(&roster(vec![enemy(5, &[3157])]), &sd)
                 .tanks
                 .is_empty()
         );
         // Thornmail and Spirit Visage still count.
         assert_eq!(
-            context(&roster(vec![enemy(3, &[3075, 3065])]), &sd).tanks,
+            context_of(&roster(vec![enemy(3, &[3075, 3065])]), &sd).tanks,
             vec![3]
         );
     }
@@ -2659,7 +2845,7 @@ mod tests {
             enemy(5, &[3075, 3065]),
             enemy(3, &[3074, 3143]),
         ]);
-        let c = context(&r, &sd);
+        let c = context_of(&r, &sd);
         assert_eq!(c.healers, vec![6, 3]);
         assert_eq!(c.tanks, vec![5]);
         let p = me(&[2503, 3020]);
@@ -2813,6 +2999,13 @@ mod tests {
             no_build: _,
             has_gold: _,
             wanted: _,
+            path: _,
+            path_item: _,
+            plan: _,
+            fed_rule: _,
+            recap: _,
+            my_stats: _,
+            rules: _,
         } = a;
         for p in items {
             let ItemPick {
@@ -2829,9 +3022,40 @@ mod tests {
             healers: _,
             tanks: _,
             enemies: _,
+            foes: _,
         } = GameContext::default();
-        // The only reasons that carry a number: the core place, the slot, and the counts and shares of the enemy team.
+        let Foe {
+            champion: _,
+            kills: _,
+            deaths: _,
+            assists: _,
+            level: _,
+            dead: _,
+            finished: _,
+            ap_gold: _,
+            ad_gold: _,
+            kind: _,
+            heals: _,
+        } = Foe::default();
+        let Recap { killers: _ } = Recap::default();
+        let RuleState {
+            vs_ap: _,
+            vs_ad: _,
+            tanks: _,
+            healers: _,
+        } = RuleState::default();
+        // The only reasons that carry a number: the core place, the slot, the counts and shares of the
+        // enemy team, and the score line of an enemy.
         for r in [
+            Reason::VsFed {
+                champion: 4,
+                kills: 9,
+                deaths: 1,
+            },
+            Reason::VsKiller {
+                champion: 4,
+                times: 3,
+            },
             Reason::Core(1),
             Reason::Slot(2),
             Reason::VsAp(70),
@@ -2847,7 +3071,246 @@ mod tests {
                     | Reason::VsAd(_)
                     | Reason::AntiHeal(_)
                     | Reason::VsTanks(_)
+                    | Reason::VsFed { .. }
+                    | Reason::VsKiller { .. }
             ));
         }
+    }
+
+    // ---- The foundation of v0.1.3: the slot fix, the shares, the foes and the new fields.
+
+    /// The slot reasons in a ranking.
+    fn slot_reasons(r: &Ranking) -> Vec<Reason> {
+        r.scored
+            .iter()
+            .map(|s| s.reason)
+            .filter(|r| matches!(r, Reason::Slot(_)))
+            .collect()
+    }
+
+    /// A build with one core item and one item in each of the first three slot rows: Rabadon's
+    /// Deathcap (1st), Void Staff (2nd) and Zhonya's Hourglass (3rd).
+    fn slotted() -> ChampStats {
+        let mut d = with_build("ap", &[2503], &[]);
+        d.slots[0] = vec![3089];
+        d.slots[1] = vec![3135];
+        d.slots[2] = vec![3157];
+        d
+    }
+
+    #[test]
+    fn owned_one_finished_and_sorcerers_shoes_gives_slot_3() {
+        let sd = sd();
+        // The slot lists of the data count the boots: the real rows hold Sorcerer's Shoes (3020).
+        assert!(heimer().slots.iter().any(|row| row.contains(&3020)));
+        // One finished item and a finished pair: the next item is the third.
+        let r = rank(&input_of(&[6653, 3020], &slotted(), &sd));
+        assert_eq!(slot_reasons(&r), vec![Reason::Slot(3)]);
+        assert_eq!(reason_of(&r, 3157), Some(Reason::Slot(3)));
+        assert_eq!(score_of(&r, 3157), Some(SLOT_BASE));
+        assert_eq!(score_of(&r, 3135), None);
+        // Without the boots it is the second.
+        let r = rank(&input_of(&[6653], &slotted(), &sd));
+        assert_eq!(reason_of(&r, 3135), Some(Reason::Slot(2)));
+    }
+
+    #[test]
+    fn basic_boots_keep_slot_2() {
+        let sd = sd();
+        // The basic Boots are no finished pair: the next item is the second of the slot lists.
+        let r = rank(&input_of(&[6653, 1001], &slotted(), &sd));
+        assert_eq!(slot_reasons(&r), vec![Reason::Slot(2)]);
+        assert_eq!(reason_of(&r, 3135), Some(Reason::Slot(2)));
+        // With no item at all, the first.
+        let r = rank(&input_of(&[], &slotted(), &sd));
+        assert_eq!(reason_of(&r, 3089), Some(Reason::Slot(1)));
+    }
+
+    #[test]
+    fn context_with_an_empty_share_map_is_today() {
+        let sd = sd();
+        // All context tests above run with the empty map (`context_of`). The numbers of the role prior
+        // stay: three mages are 100 % AP, and a mage, a marksman and a fighter are 40 %.
+        let mages = roster(vec![enemy(1, &[]), enemy(7, &[]), enemy(1, &[])]);
+        let mixed = roster(vec![enemy(1, &[]), enemy(2, &[]), enemy(3, &[])]);
+        assert_eq!(context(&mages, &sd, &HashMap::new()).ap_pct, Some(100));
+        assert_eq!(context(&mixed, &sd, &HashMap::new()).ap_pct, Some(40));
+        // A share of a champion that is not in the game changes nothing.
+        let other = HashMap::from([(999, 0.0)]);
+        for r in [&mages, &mixed] {
+            assert_eq!(context(r, &sd, &other), context_of(r, &sd));
+        }
+        // A share of the champion's own data takes the place of its role: Jinx at 1.0 deals magic damage.
+        let jinx = HashMap::from([(2, 1.0)]);
+        assert_eq!(context(&mixed, &sd, &jinx).ap_pct, Some(75));
+        assert_eq!(share_of(&sd, &enemy(2, &[]), &jinx), (PRIOR_GOLD, 0.0));
+        assert_eq!(
+            share_of(&sd, &enemy(2, &[]), &HashMap::new()),
+            (0.0, PRIOR_GOLD)
+        );
+    }
+
+    #[test]
+    fn foes_follow_the_roster_and_kind_is_none_in_the_stub() {
+        let sd = sd();
+        let r = roster(vec![
+            Player {
+                level: 12,
+                dead: true,
+                ..scored_enemy(51, &[3031, 3036, 3020], 9, 1, 4)
+            },
+            scored_enemy(6, &[3072], 2, 3, 7),
+            enemy(0, &[3089]),
+            enemy(1, &[3089, 1058]),
+        ]);
+        let c = context_of(&r, &sd);
+        // One foe for each known enemy, by champion id. The unknown enemy is no foe.
+        assert_eq!(
+            c.foes.iter().map(|f| f.champion).collect::<Vec<_>>(),
+            vec![1, 6, 51]
+        );
+        let cait = c.foes[2];
+        assert_eq!(
+            (cait.kills, cait.deaths, cait.assists, cait.level, cait.dead),
+            (9, 1, 4, 12, true)
+        );
+        // Two finished items: the boots do not count. The gold is the prior plus the damage items.
+        assert_eq!(cait.finished, 2);
+        let (ap, ad) = share_of(&sd, &r.players[1], &HashMap::new());
+        assert_eq!(
+            (cait.ap_gold, cait.ad_gold),
+            (ap.round() as u32, ad.round() as u32)
+        );
+        assert!(cait.ad_gold > cait.ap_gold);
+        // Rabadon's Deathcap is finished, a Needlessly Large Rod is not.
+        assert_eq!(c.foes[0].finished, 1);
+        // Soraka heals, Caitlyn does not. The stub gives no kind.
+        assert!(c.foes[1].heals && !cait.heals);
+        assert!(c.foes.iter().all(|f| f.kind == FoeKind::None));
+    }
+
+    #[test]
+    fn the_healers_come_with_the_fed_enemy_first_then_by_kills() {
+        let sd = sd();
+        // Soraka (6) with 2 kills, Yuumi (8) with 4 kills, and Aatrox (266) fed at 9/2.
+        let r = roster(vec![
+            scored_enemy(6, &[], 2, 0, 0),
+            scored_enemy(8, &[], 4, 0, 0),
+            scored_enemy(266, &[], 9, 2, 0),
+        ]);
+        assert_eq!(context_of(&r, &sd).healers, vec![266, 8, 6]);
+        // Equal kills go by id.
+        let r = roster(vec![enemy(8, &[]), enemy(6, &[])]);
+        assert_eq!(context_of(&r, &sd).healers, vec![6, 8]);
+    }
+
+    #[test]
+    fn the_new_fields_start_empty_and_change_nothing() {
+        let (sd, d) = (sd(), heimer());
+        let team = ctx(Some(70), 2, 2);
+        for owned in [&[][..], &[2503], &[2503, 3020], &[6653, 3020, 3116]] {
+            let mut i = input_of(owned, &d, &sd);
+            i.ctx = Some(&team);
+            let a = advise(&i);
+            assert_eq!(
+                (a.path, a.path_item, a.fed_rule, a.recap.clone(), a.my_stats),
+                (None, None, None, None, None),
+                "{owned:?}"
+            );
+            assert!(a.plan.is_empty(), "{owned:?}");
+            // The rules that fired are in the advice.
+            assert_eq!(
+                a.rules,
+                RuleState {
+                    vs_ap: true,
+                    vs_ad: false,
+                    tanks: true,
+                    healers: true
+                }
+            );
+            // The previous state, stats with no field and the previous path change nothing yet.
+            i.prev_rules = Some(RuleState::default());
+            i.prev_path = Some(3);
+            i.prev_fed = Some(4);
+            i.stats = Some(MyStats::default());
+            assert_eq!(advise(&i), a, "{owned:?}");
+        }
+        // Your own stats reach the advice rounded, when both resists are there.
+        let mut i = input_of(&[], &d, &sd);
+        i.stats = Some(MyStats {
+            armor: Some(171.6),
+            mr: Some(48.2),
+            max_health: Some(2000.0),
+        });
+        assert_eq!(advise(&i).my_stats, Some((172, 48)));
+        i.stats = Some(MyStats {
+            armor: Some(171.6),
+            ..Default::default()
+        });
+        assert_eq!(advise(&i).my_stats, None);
+    }
+
+    #[test]
+    fn the_signature_changes_with_the_killers_of_the_recap_only() {
+        let (sd, d) = (sd(), heimer());
+        let base = advise(&input_of(&[], &d, &sd));
+        let zed = Recap { killers: vec![4] };
+        let lux = Recap { killers: vec![7] };
+        let mut i = input_of(&[], &d, &sd);
+        i.recap = Some(&zed);
+        let a = advise(&i);
+        assert_eq!(a.recap.as_ref(), Some(&zed));
+        assert_ne!(a.signature(), base.signature());
+        i.recap = Some(&lux);
+        assert_ne!(advise(&i).signature(), a.signature());
+        // The plan and the path are not in the signature.
+        let other = Advice {
+            plan: vec![3089, 3135],
+            path: Some(2),
+            path_item: Some(3118),
+            ..base.clone()
+        };
+        assert_eq!(other.signature(), base.signature());
+    }
+
+    #[test]
+    fn the_resist_bonus_and_the_inject_cap_keep_today_s_numbers() {
+        let (sd, mage) = (sd(), with_build("ap", &[2503, 6653, 3089], &[]));
+        let i = input_of(&[], &mage, &sd);
+        let pass = Pass {
+            input: &i,
+            build: &mage.builds[0],
+            build_at: 0,
+            class: Class::Ap,
+            tank: false,
+            held: Vec::new(),
+            finished: 0,
+            owns_boots: false,
+            mr_bonus: 16,
+            armor_bonus: 0,
+            rules: Rules::default(),
+        };
+        assert_eq!(
+            (pass.bonus(cat::MR), pass.bonus(cat::ARMOR), pass.bonus(0)),
+            (16, 0, 0)
+        );
+        // The bonus of a resist: the shrink, and never more than the stat factor allows (1.0 in F0).
+        assert_eq!(resist_bonus(RESIST_CARRY, 0, None), RESIST_CARRY);
+        assert_eq!(resist_bonus(RESIST_CARRY, 1, Some(40.0)), RESIST_CARRY / 2);
+        assert_eq!(resist_bonus(RESIST_TANK, 2, None), 0);
+        // The reason priorities keep the order of v0.1.2: killer, fed, anti-heal, penetration, resist.
+        const {
+            assert!(PRIO_KILLER < PRIO_FED && PRIO_FED < PRIO_ANTI_HEAL);
+            assert!(PRIO_ANTI_HEAL < PRIO_PEN && PRIO_PEN < PRIO_RESIST);
+        }
+        // Healers and an AP team: two injects (Morellonomicon and Banshee's Veil), which is the cap.
+        let both = ctx(Some(80), 2, 0);
+        let mut i = input_of(&[], &mage, &sd);
+        i.ctx = Some(&both);
+        let r = rank(&i);
+        assert_eq!(score_of(&r, 3165), Some(ANTI_HEAL_BASE + ANTI_HEAL_BONUS));
+        assert_eq!(score_of(&r, 3102), Some(RESIST_BASE + RESIST_CARRY));
+        assert_eq!(reason_of(&r, 3102), Some(Reason::VsAp(80)));
+        assert_eq!(MAX_INJECTS, 2);
     }
 }
