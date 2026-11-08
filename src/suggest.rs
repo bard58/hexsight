@@ -2647,8 +2647,9 @@ mod tests {
             assert!(info.in_store && info.cats & cat::BOOTS == 0, "{}", pick.id);
             assert!(!p.items.contains(&pick.id), "{}", pick.id);
         }
-        // The next two core items, and Morellonomicon against the two healers (the fed Soraka and Garen).
-        assert_eq!(ids(&a), vec![6653, 3089, 3165]);
+        // The next two core items of the most played build (Liandry's, Rylai's), and Morellonomicon
+        // against the two healers (the fed Soraka and Garen).
+        assert_eq!(ids(&a), vec![6653, 3116, 3165]);
         assert_eq!(a.items[2].reason, Reason::AntiHeal(2));
     }
 
