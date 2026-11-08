@@ -3,6 +3,7 @@
 use crate::badges;
 use crate::data::{LoadError, NoStats};
 use crate::history::{self, Game};
+use crate::hstats;
 use crate::i18n::{Key, Lang, LangPref};
 use crate::kit::{self, fmt_n};
 use crate::lcu::{Phase, Trade, TradeCall, TradeState};
@@ -261,6 +262,153 @@ const MY_CHAMPIONS: usize = 5;
 const GAMES_FIRST: usize = 10;
 const GAMES_MAX: usize = 100;
 
+/// The height of an augment row on the Augments tab, and the size of its icon.
+const AUG_ROW_H: f32 = 44.0;
+const AUG_ROW_ICON: f32 = 28.0;
+/// The height of the form line.
+const FORM_H: f32 = 40.0;
+
+/// The tabs of My games. Only the tab that shows is computed and drawn.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+enum StatsTab {
+    #[default]
+    Games,
+    Champions,
+    Augments,
+}
+
+/// What the numbers of My games depend on. When the key changes, the numbers are counted again.
+/// The generation of the history changes each time the saved games change (`Shared::history_gen`),
+/// so the key never reads the pointer of the list. The local day is part of the key, so the
+/// numbers of "Today" follow midnight.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct StatsKey {
+    generation: u64,
+    games: usize,
+    day: i64,
+    period: hstats::Period,
+    filter: hstats::Filter,
+    tab: StatsTab,
+}
+
+/// The numbers of the tab that shows (the Games tab needs only the indexes).
+enum StatsExtra {
+    None,
+    Champions {
+        counts: Vec<hstats::ChampionCount>,
+        highlights: hstats::Highlights,
+    },
+    Augments(Vec<hstats::AugmentCount>),
+}
+
+/// The numbers of My games for one `StatsKey`.
+struct StatsView {
+    key: StatsKey,
+    /// The games that pass the period and the filter (indexes into the history).
+    idx: Vec<usize>,
+    profile: hstats::Profile,
+    form: Vec<f32>,
+    extra: StatsExtra,
+}
+
+/// Count the games for a key. The header, the form line and the Games tab use the period and
+/// the whole filter. The Champions tab leaves the champion filter out, so the list stays
+/// whole, and the Augments tab leaves the augment filter out, for the same reason.
+fn build_stats(games: &[Game], key: StatsKey, now: i64, zone: &dyn Fn(i64) -> i64) -> StatsView {
+    let idx = hstats::select(games, key.period, key.filter, now, zone);
+    let picked = hstats::pick(games, &idx);
+    let profile = hstats::profile(&picked);
+    let form = hstats::form_series(&picked, hstats::FORM_GAMES, hstats::FORM_WINDOW);
+    let of = |filter| {
+        let idx = hstats::select(games, key.period, filter, now, zone);
+        hstats::pick(games, &idx)
+    };
+    let extra = match key.tab {
+        StatsTab::Games => StatsExtra::None,
+        StatsTab::Champions => {
+            let counts = hstats::champion_counts(&of(hstats::Filter {
+                champion: None,
+                augment: key.filter.augment,
+            }));
+            let highlights = hstats::highlights(&counts);
+            StatsExtra::Champions { counts, highlights }
+        }
+        StatsTab::Augments => StatsExtra::Augments(hstats::augment_counts(&of(hstats::Filter {
+            champion: key.filter.champion,
+            augment: None,
+        }))),
+    };
+    StatsView {
+        key,
+        idx,
+        profile,
+        form,
+        extra,
+    }
+}
+
+/// Paint the form line: the rolling win rate, the oldest game at the left, with a dashed
+/// guide at 50 %. The line is one neutral color. The tooltip says what it shows.
+fn paint_form(ui: &mut Ui, series: &[f32], tip: &str) {
+    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), FORM_H), Sense::hover());
+    let p = ui.painter();
+    let (left, right) = (r.left() + 3.0, r.right() - 3.0);
+    let y = |v: f32| r.bottom() - 3.0 - v.clamp(0.0, 1.0) * (r.height() - 6.0);
+    let guide = egui::Stroke::new(1.0, LABEL_3.gamma_multiply(0.5));
+    let mut x = left;
+    while x < right {
+        let to = (x + 4.0).min(right);
+        p.line_segment([pos2(x, y(0.5)), pos2(to, y(0.5))], guide);
+        x += 7.0;
+    }
+    let n = series.len();
+    let at = |i: usize| {
+        let t = if n > 1 {
+            i as f32 / (n - 1) as f32
+        } else {
+            1.0
+        };
+        pos2(left + t * (right - left), y(series[i]))
+    };
+    if n > 1 {
+        let points: Vec<egui::Pos2> = (0..n).map(at).collect();
+        p.add(egui::Shape::line(points, egui::Stroke::new(1.75, BLUE)));
+    }
+    if n > 0 {
+        p.circle_filled(at(n - 1), 3.0, BLUE);
+    }
+    resp.on_hover_text(tip);
+}
+
+/// A chip for a filter that is on: the name and a small cross. Returns true for a tap.
+fn filter_chip(ui: &mut Ui, text: &str, tip: &str) -> bool {
+    let mut job = egui::text::LayoutJob::single_section(
+        text.to_string(),
+        egui::TextFormat::simple(FontId::new(12.0, semibold()), LABEL),
+    );
+    job.wrap.max_width = (ui.available_width() - 34.0).clamp(40.0, 180.0);
+    job.wrap.max_rows = 1;
+    job.wrap.break_anywhere = true;
+    let galley = ui.painter().layout_job(job);
+    let size = vec2(galley.size().x + 32.0, 24.0);
+    let (r, resp) = ui.allocate_exact_size(size, Sense::click());
+    let p = ui.painter();
+    let fill = if resp.hovered() { SURFACE_3 } else { SURFACE_2 };
+    p.rect_filled(r, CornerRadius::same(12), fill);
+    p.galley(
+        pos2(r.left() + 10.0, r.center().y - galley.size().y / 2.0),
+        galley,
+        LABEL,
+    );
+    let c = pos2(r.right() - 11.0, r.center().y);
+    let stroke = egui::Stroke::new(1.5, LABEL_2);
+    p.line_segment([c + vec2(-3.0, -3.0), c + vec2(3.0, 3.0)], stroke);
+    p.line_segment([c + vec2(-3.0, 3.0), c + vec2(3.0, -3.0)], stroke);
+    resp.on_hover_text(tip)
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .clicked()
+}
+
 /// A row of "Recent games": its height, the champion disc, and the room between the disc and the
 /// texts, in points.
 const GAME_ROW_H: f32 = 44.0;
@@ -483,6 +631,14 @@ pub struct App {
     games_all: bool,
     /// My games lists every champion with a game, not only the `MY_CHAMPIONS` most played.
     champions_all: bool,
+    /// The period, the tab and the filters of My games, and the numbers of the last frame.
+    stats_period: hstats::Period,
+    stats_tab: StatsTab,
+    stats_filter: hstats::Filter,
+    stats_cache: Option<Arc<StatsView>>,
+    /// For tests: how often the numbers of My games were counted.
+    #[cfg(test)]
+    stats_builds: u32,
     /// For tests: the time that My games reads dates against, as (Unix seconds in UTC, the offset of
     /// the local zone in seconds). `None` reads the clock and the time zone of this PC.
     debug_clock: Option<(i64, i64)>,
@@ -2524,6 +2680,8 @@ struct View {
     read: ReadView,
     /// The saved games of the player, newest first.
     history: Arc<Vec<Game>>,
+    /// Changes each time the saved games change (`Shared::history_gen`).
+    history_gen: u64,
     /// The first read of the match history runs (or waits to try again).
     importing: bool,
     /// The League install folder is known.
@@ -2693,6 +2851,12 @@ impl App {
             hidden_told: false,
             games_all: false,
             champions_all: false,
+            stats_period: hstats::Period::default(),
+            stats_tab: StatsTab::default(),
+            stats_filter: hstats::Filter::default(),
+            stats_cache: None,
+            #[cfg(test)]
+            stats_builds: 0,
             debug_clock: None,
         }
     }
@@ -3192,6 +3356,7 @@ impl eframe::App for App {
                     ReadView::default()
                 },
                 history: s.history.clone(),
+                history_gen: s.history_gen,
                 importing: s.importing,
                 league_found: s.league_found,
                 ocr_probe: s.ocr_probe,
@@ -5228,13 +5393,15 @@ impl App {
         });
     }
 
-    /// "My games": your results from the saved games. The overall numbers (a win rate
-    /// has a color from `RATE_COLOR_GAMES` games on), the last ten results (a win is a
-    /// filled green disc, a loss a red ring, then the score as text), the recent games (one
-    /// row each: the newest `GAMES_FIRST`, and "Show all" lists up to `GAMES_MAX`), and your
-    /// most played champions (the switch "All champions" lists every champion with a game). The
-    /// rows show the augments that you took and never a win rate of an augment. That the games
-    /// stay on this PC is said in Settings > About.
+    /// "My games": your results from the saved games. The period chips (Today, 7 days, 30 days,
+    /// All) and the filter chips (a champion, an augment) drive every number on the page: the
+    /// profile header (win rate, streak from three games, average K/D/A, KDA, average length, the
+    /// last ten results as a disc for a win and a ring for a loss), the form line, and the tab
+    /// under them. Only the tab that shows is computed and drawn: Games (the recent games, the
+    /// newest `GAMES_FIRST`, and "Show all" lists up to `GAMES_MAX`), Champions (the most played
+    /// and the most wins among the champions with three games, and your champions with the switch
+    /// "All champions") and Augments (your own picks and wins as counts). The page never shows a
+    /// win rate of an augment. That the games stay on this PC is said in Settings > About.
     fn games_ui(&mut self, ui: &mut Ui, v: &View) {
         let lang = self.lang;
         let Some(sd) = v.sd.clone() else {
@@ -5252,145 +5419,458 @@ impl App {
                 Self::empty(ui, lang.t(Key::GamesNone), lang.t(Key::GamesNoneBody))
             };
         }
-        let sum = history::summarize(&v.history);
         let (now, zone) = self.date_clock();
+        let st = self.stats_view(v, now, &*zone);
+        let before = (self.stats_period, self.stats_tab, self.stats_filter);
         self.page_area(ui.ctx(), f32::MAX).show(ui, |ui| {
-            kit::section(ui, &lang.upper(lang.t(Key::GamesOverall)));
-            kit::group(ui, |ui| {
-                let t = sum.total;
-                ui.horizontal(|ui| {
-                    ui.label(
-                        title(lang.pct(t.rate() * 100.0, 0), 28.0)
-                            .color(rate_color(t.rate(), t.games)),
-                    );
-                    ui.vertical(|ui| {
-                        ui.label(strong(lang.t(Key::GamesWinRate), 13.5));
-                        ui.label(caption(lang.totals(t.games, t.wins, t.games - t.wins)));
-                    });
-                });
-                ui.add_space(6.0);
-                // The last ten results, the oldest at the left and the newest at the right end (the
-                // tooltip says so). A win is a filled disc and a loss a ring, so the result does not
-                // depend on the color alone. The score follows the dots.
-                let recent: Vec<bool> = v.history.iter().take(10).map(|g| g.win).rev().collect();
-                let wins = recent.iter().filter(|w| **w).count();
-                let losses = recent.len() - wins;
-                ui.horizontal(|ui| {
-                    ui.label(caption(lang.t(Key::GamesLast10)));
-                    let (r, resp) = ui.allocate_exact_size(
-                        vec2(recent.len() as f32 * RESULT_DOT_STEP, 16.0),
-                        Sense::hover(),
-                    );
-                    for (i, win) in recent.iter().enumerate() {
-                        paint_result_dot(
-                            ui.painter(),
-                            pos2(
-                                r.left() + RESULT_DOT_STEP / 2.0 + i as f32 * RESULT_DOT_STEP,
-                                r.center().y,
-                            ),
-                            *win,
-                        );
-                    }
-                    resp.on_hover_text(lang.t(Key::GamesLast10Tip));
-                    ui.label(caption(lang.fmt(Key::GamesLast10Score, &[&wins, &losses])));
+            let periods = [
+                (hstats::Period::Today, lang.t(Key::PeriodToday)),
+                (hstats::Period::Days7, lang.t(Key::Period7)),
+                (hstats::Period::Days30, lang.t(Key::Period30)),
+                (hstats::Period::All, lang.t(Key::PeriodAll)),
+            ];
+            ui.add_space(2.0);
+            kit::segmented(ui, "stats_period", &mut self.stats_period, &periods);
+            self.profile_ui(ui, &st);
+            ui.add_space(14.0);
+            let tabs = [
+                (StatsTab::Games, lang.t(Key::TabGames)),
+                (StatsTab::Champions, lang.t(Key::TabChampions)),
+                (StatsTab::Augments, lang.t(Key::TabAugments)),
+            ];
+            kit::segmented(ui, "stats_tab", &mut self.stats_tab, &tabs);
+            self.filter_chips(ui, &sd);
+            match (self.stats_tab, &st.extra) {
+                (StatsTab::Games, _) => self.games_tab(ui, &sd, v, &st, now, &*zone),
+                (StatsTab::Champions, StatsExtra::Champions { counts, highlights }) => {
+                    self.champions_tab(ui, &sd, counts, highlights)
+                }
+                (StatsTab::Augments, StatsExtra::Augments(counts)) => {
+                    self.augments_tab(ui, &sd, counts)
+                }
+                // The tab changed in this frame. The numbers of the new tab come in the next one.
+                _ => {}
+            }
+            ui.add_space(12.0);
+        });
+        if before != (self.stats_period, self.stats_tab, self.stats_filter) {
+            ui.ctx().request_repaint();
+        }
+    }
+
+    /// The numbers of My games for the period, the filter and the tab. They come from the cache
+    /// while the history (its generation), the local day, the period, the filter and the tab stay
+    /// the same, so a frame does not count the games again.
+    fn stats_view(&mut self, v: &View, now: i64, zone: &dyn Fn(i64) -> i64) -> Arc<StatsView> {
+        let key = StatsKey {
+            generation: v.history_gen,
+            games: v.history.len(),
+            day: (now + zone(now)).div_euclid(86_400),
+            period: self.stats_period,
+            filter: self.stats_filter,
+            tab: self.stats_tab,
+        };
+        if let Some(c) = self.stats_cache.as_ref().filter(|c| c.key == key) {
+            return c.clone();
+        }
+        #[cfg(test)]
+        {
+            self.stats_builds += 1;
+        }
+        let built = Arc::new(build_stats(&v.history, key, now, zone));
+        self.stats_cache = Some(built.clone());
+        built
+    }
+
+    /// The header of My games: win rate, streak, averages and the last ten results, then the
+    /// form line when there are enough games.
+    fn profile_ui(&self, ui: &mut Ui, st: &StatsView) {
+        let lang = self.lang;
+        let p = &st.profile;
+        kit::section(ui, &lang.upper(lang.t(Key::GamesOverall)));
+        kit::group(ui, |ui| {
+            if p.games == 0 {
+                ui.label(caption(lang.t(Key::StatsNoGames)));
+                return;
+            }
+            ui.horizontal(|ui| {
+                ui.label(
+                    title(lang.pct(p.win_rate * 100.0, 0), 28.0)
+                        .color(rate_color(p.win_rate, p.games)),
+                );
+                ui.vertical(|ui| {
+                    ui.label(strong(lang.t(Key::GamesWinRate), 13.5));
+                    ui.label(caption(lang.totals(p.games, p.wins, p.losses)));
                 });
             });
-
-            // The recent games, the newest first. The button at the end shows the older rows, and takes them back.
-            kit::section(ui, &lang.upper(lang.t(Key::GamesRecent)));
+            if let Some((len, win)) = p.shown_streak() {
+                ui.add_space(4.0);
+                let text = lang.fmt(
+                    if win {
+                        Key::StatsStreakWin
+                    } else {
+                        Key::StatsStreakLoss
+                    },
+                    &[&len],
+                );
+                kit::pill(ui, &text, if win { GREEN } else { RED }, false);
+            }
+            ui.add_space(6.0);
+            let one = |v: f32| lang.num(v, 1);
+            let averages = lang.fmt(
+                Key::StatsAvg,
+                &[&one(p.avg_kills), &one(p.avg_deaths), &one(p.avg_assists)],
+            );
+            let kda = lang.fmt(Key::StatsKda, &[&one(p.kda)]);
+            ui.label(caption(format!("{averages} · {kda}")));
+            if let Some(secs) = p.avg_secs {
+                ui.label(caption(
+                    lang.fmt(Key::StatsAvgLength, &[&length_text(secs)]),
+                ));
+            }
+            ui.add_space(6.0);
+            // The last ten results, the oldest at the left and the newest at the right end (the
+            // tooltip says so). A win is a filled disc and a loss a ring, so the result does not
+            // depend on the color alone. The score follows the dots.
+            let recent: Vec<bool> = p.last.iter().rev().copied().collect();
+            let wins = recent.iter().filter(|w| **w).count();
+            let losses = recent.len() - wins;
+            ui.horizontal(|ui| {
+                ui.label(caption(lang.t(Key::GamesLast10)));
+                let (r, resp) = ui.allocate_exact_size(
+                    vec2(recent.len() as f32 * RESULT_DOT_STEP, 16.0),
+                    Sense::hover(),
+                );
+                for (i, win) in recent.iter().enumerate() {
+                    paint_result_dot(
+                        ui.painter(),
+                        pos2(
+                            r.left() + RESULT_DOT_STEP / 2.0 + i as f32 * RESULT_DOT_STEP,
+                            r.center().y,
+                        ),
+                        *win,
+                    );
+                }
+                resp.on_hover_text(lang.t(Key::GamesLast10Tip));
+                ui.label(caption(lang.fmt(Key::GamesLast10Score, &[&wins, &losses])));
+            });
+        });
+        if !st.form.is_empty() {
+            let shown = p.games.min(hstats::FORM_GAMES as u32);
+            kit::section(ui, &lang.upper(&lang.fmt(Key::StatsForm, &[&shown])));
             kit::group(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 0.0;
-                for (i, g) in v
-                    .history
-                    .iter()
-                    .take(games_listed(v.history.len(), self.games_all))
-                    .enumerate()
+                paint_form(
+                    ui,
+                    &st.form,
+                    &lang.fmt(Key::StatsFormTip, &[&hstats::FORM_WINDOW]),
+                )
+            });
+        }
+    }
+
+    /// The chips of the filters that are on. A tap on a chip takes its filter off.
+    fn filter_chips(&mut self, ui: &mut Ui, sd: &StaticData) {
+        let lang = self.lang;
+        let filter = self.stats_filter;
+        if filter.champion.is_none() && filter.augment.is_none() {
+            return;
+        }
+        ui.add_space(8.0);
+        ui.horizontal_wrapped(|ui| {
+            if let Some(id) = filter.champion {
+                let name = sd.champions.get(&id).map_or("?", |c| c.name.as_str());
+                if filter_chip(ui, name, lang.t(Key::FilterRemove)) {
+                    self.stats_filter.champion = None;
+                }
+            }
+            if let Some(id) = filter.augment {
+                let name = sd
+                    .augments
+                    .get(&id)
+                    .map_or_else(|| format!("#{id}"), |a| a.name.clone());
+                if filter_chip(ui, &name, lang.t(Key::FilterRemove)) {
+                    self.stats_filter.augment = None;
+                }
+            }
+        });
+    }
+
+    /// The Games tab: the games that pass the period and the filter, the newest first. The
+    /// button at the end shows the older rows, and takes them back.
+    fn games_tab(
+        &mut self,
+        ui: &mut Ui,
+        sd: &StaticData,
+        v: &View,
+        st: &StatsView,
+        now: i64,
+        zone: &dyn Fn(i64) -> i64,
+    ) {
+        let lang = self.lang;
+        kit::section(ui, &lang.upper(lang.t(Key::GamesRecent)));
+        kit::group(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            if st.idx.is_empty() {
+                ui.label(caption(lang.t(Key::StatsNoGames)));
+                return;
+            }
+            let listed = games_listed(st.idx.len(), self.games_all);
+            for (i, g) in st
+                .idx
+                .iter()
+                .take(listed)
+                .map(|i| &v.history[*i])
+                .enumerate()
+            {
+                if i > 0 {
+                    kit::hairline(ui, GAME_ICON + GAME_TEXT_GAP);
+                }
+                self.game_row(ui, sd, g, &game_date(lang, &g.date, now, zone));
+            }
+            if st.idx.len() > GAMES_FIRST {
+                kit::hairline(ui, 0.0);
+                if kit::text_button(
+                    ui,
+                    lang.t(if self.games_all {
+                        Key::GamesShowLess
+                    } else {
+                        Key::GamesShowAll
+                    }),
+                )
+                .clicked()
                 {
-                    if i > 0 {
-                        kit::hairline(ui, GAME_ICON + GAME_TEXT_GAP);
-                    }
-                    self.game_row(ui, &sd, g, &game_date(lang, &g.date, now, &*zone));
+                    self.games_all = !self.games_all;
                 }
-                if v.history.len() > GAMES_FIRST {
-                    kit::hairline(ui, 0.0);
-                    if kit::text_button(
-                        ui,
-                        lang.t(if self.games_all {
-                            Key::GamesShowLess
-                        } else {
-                            Key::GamesShowAll
-                        }),
-                    )
-                    .clicked()
-                    {
-                        self.games_all = !self.games_all;
-                    }
-                }
-            });
+            }
+        });
+    }
 
-            kit::section(ui, &lang.upper(lang.t(Key::GamesYourChampions)));
+    /// The Champions tab: the two quick filters (champions with at least three games), then
+    /// your champions (the switch "All champions" lists every champion with a game). A tap on
+    /// a row filters the games by that champion.
+    fn champions_tab(
+        &mut self,
+        ui: &mut Ui,
+        sd: &StaticData,
+        counts: &[hstats::ChampionCount],
+        highlights: &hstats::Highlights,
+    ) {
+        let lang = self.lang;
+        let mut chosen = None;
+        let quick = [
+            (Key::ChampMostPlayed, highlights.most_played, false),
+            (Key::ChampMostWins, highlights.most_wins, true),
+        ];
+        if quick.iter().any(|q| q.1.is_some()) {
+            ui.add_space(8.0);
             kit::group(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
-                // The switch is the first row, so it stays in place while the list grows under it.
-                if sum.champions.len() > MY_CHAMPIONS {
-                    kit::toggle(ui, &mut self.champions_all, lang.t(Key::GamesAllChampions));
-                    ui.add_space(4.0);
-                    kit::hairline(ui, 0.0);
-                }
-                let listed = if self.champions_all {
-                    sum.champions.len()
-                } else {
-                    MY_CHAMPIONS
-                };
                 let mut first = true;
-                for (id, t) in sum.champions.iter().take(listed) {
-                    let Some(c) = sd.champions.get(id) else {
+                for (label, c, by_wins) in quick {
+                    let Some(c) = c else { continue };
+                    let Some(champ) = sd.champions.get(&c.id) else {
                         continue;
                     };
                     if !std::mem::take(&mut first) {
                         kit::hairline(ui, 48.0);
                     }
-                    let (r, _) =
-                        ui.allocate_exact_size(vec2(ui.available_width(), 48.0), Sense::hover());
-                    // The icon sits at the left edge of the row.
-                    let ir = Rect::from_center_size(
-                        pos2(r.left() + 18.0, r.center().y),
-                        Vec2::splat(36.0),
-                    );
-                    self.paint_icon(ui, &c.icon, ir, 9);
-                    let x = ir.right() + 12.0;
-                    text_at(
-                        ui,
-                        pos2(x, r.top() + 8.0),
-                        &c.name,
-                        FontId::new(14.0, semibold()),
-                        LABEL,
-                        r.right() - x - 52.0,
-                    );
-                    let line = format!(
-                        "{} · {}",
-                        lang.games(t.games, &t.games.to_string()),
-                        lang.wins(t.wins)
-                    );
-                    text_at(
-                        ui,
-                        pos2(x, r.top() + 28.0),
-                        &line,
-                        FontId::proportional(11.5),
-                        LABEL_3,
-                        r.right() - x - 52.0,
-                    );
-                    ui.painter().text(
-                        pos2(r.right() - 2.0, r.center().y),
-                        Align2::RIGHT_CENTER,
-                        lang.pct(t.rate() * 100.0, 0),
-                        FontId::new(15.0, semibold()),
-                        rate_color(t.rate(), t.games),
-                    );
+                    let count = if by_wins {
+                        lang.wins(c.wins)
+                    } else {
+                        lang.games(c.games, &c.games.to_string())
+                    };
+                    let rows = [
+                        (lang.t(label), FontId::proportional(11.5), LABEL_3, 7.0),
+                        (
+                            champ.name.as_str(),
+                            FontId::new(14.0, semibold()),
+                            LABEL,
+                            22.0,
+                        ),
+                    ];
+                    let right = (count, FontId::proportional(11.5), LABEL_3);
+                    if self.stats_champion_row(ui, champ, rows, right) {
+                        chosen = Some(c.id);
+                    }
                 }
             });
-            ui.add_space(12.0);
+        }
+        kit::section(ui, &lang.upper(lang.t(Key::GamesYourChampions)));
+        kit::group(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            if counts.is_empty() {
+                ui.label(caption(lang.t(Key::StatsNoGames)));
+                return;
+            }
+            // The switch is the first row, so it stays in place while the list grows under it.
+            if counts.len() > MY_CHAMPIONS {
+                kit::toggle(ui, &mut self.champions_all, lang.t(Key::GamesAllChampions));
+                ui.add_space(4.0);
+                kit::hairline(ui, 0.0);
+            }
+            let listed = if self.champions_all {
+                counts.len()
+            } else {
+                MY_CHAMPIONS
+            };
+            let mut first = true;
+            for c in counts.iter().take(listed) {
+                let Some(champ) = sd.champions.get(&c.id) else {
+                    continue;
+                };
+                if !std::mem::take(&mut first) {
+                    kit::hairline(ui, 48.0);
+                }
+                let line = format!(
+                    "{} · {}",
+                    lang.games(c.games, &c.games.to_string()),
+                    lang.wins(c.wins)
+                );
+                let rate = c.wins as f32 / c.games.max(1) as f32;
+                let rows = [
+                    (
+                        champ.name.as_str(),
+                        FontId::new(14.0, semibold()),
+                        LABEL,
+                        8.0,
+                    ),
+                    (line.as_str(), FontId::proportional(11.5), LABEL_3, 28.0),
+                ];
+                let right = (
+                    lang.pct(rate * 100.0, 0),
+                    FontId::new(15.0, semibold()),
+                    rate_color(rate, c.games),
+                );
+                if self.stats_champion_row(ui, champ, rows, right) {
+                    chosen = Some(c.id);
+                }
+            }
         });
+        if let Some(id) = chosen {
+            self.stats_filter.champion = Some(id);
+            self.stats_tab = StatsTab::Games;
+            self.games_all = false;
+        }
+    }
+
+    /// One tappable row of the Champions tab, 48 high: the round icon, two lines of text (each
+    /// with its font, color and distance from the top of the row), and the text at the right.
+    /// Returns true for a tap.
+    fn stats_champion_row(
+        &self,
+        ui: &mut Ui,
+        champ: &Champion,
+        lines: [(&str, FontId, Color32, f32); 2],
+        right: (String, FontId, Color32),
+    ) -> bool {
+        let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 48.0), Sense::click());
+        // Only a row in view paints: a long list stays cheap.
+        if !ui.is_rect_visible(r) {
+            return resp.clicked();
+        }
+        if resp.hovered() {
+            ui.painter()
+                .rect_filled(r, CornerRadius::same(8), SURFACE_2);
+        }
+        // The icon sits at the left edge of the row.
+        let ir = Rect::from_center_size(pos2(r.left() + 18.0, r.center().y), Vec2::splat(36.0));
+        self.paint_icon(ui, &champ.icon, ir, 9);
+        let x = ir.right() + 12.0;
+        let room = r.right() - x - 52.0;
+        for (text, font, color, dy) in lines {
+            text_at(ui, pos2(x, r.top() + dy), text, font, color, room);
+        }
+        ui.painter().text(
+            pos2(r.right() - 2.0, r.center().y),
+            Align2::RIGHT_CENTER,
+            right.0,
+            right.1,
+            right.2,
+        );
+        resp.on_hover_text(self.lang.t(Key::ChampFilterTip))
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .clicked()
+    }
+
+    /// The Augments tab: your own augments with "N picks, M wins". Counts only: no rate, no
+    /// color for a good or a bad result, and the most picked first. A row with few picks is
+    /// dimmed. A tap on a row filters the games by that augment.
+    fn augments_tab(&mut self, ui: &mut Ui, sd: &StaticData, counts: &[hstats::AugmentCount]) {
+        let lang = self.lang;
+        kit::section(ui, &lang.upper(lang.t(Key::AugmentsTitle)));
+        ui.add(egui::Label::new(caption(lang.t(Key::AugNote))).wrap());
+        ui.add_space(8.0);
+        let mut chosen = None;
+        kit::group(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            if counts.is_empty() {
+                ui.label(caption(lang.t(Key::StatsNoGames)));
+                return;
+            }
+            for (i, c) in counts.iter().enumerate() {
+                if i > 0 {
+                    kit::hairline(ui, AUG_ROW_ICON + 12.0);
+                }
+                let (r, resp) =
+                    ui.allocate_exact_size(vec2(ui.available_width(), AUG_ROW_H), Sense::click());
+                // Only a row in view paints: a list of hundreds of augments stays cheap.
+                if !ui.is_rect_visible(r) {
+                    continue;
+                }
+                if resp.hovered() {
+                    ui.painter()
+                        .rect_filled(r, CornerRadius::same(8), SURFACE_2);
+                }
+                let dim = c.dim();
+                let augment = sd.augments.get(&c.id);
+                let name = augment.map_or_else(|| format!("#{}", c.id), |a| a.name.clone());
+                let ir = Rect::from_center_size(
+                    pos2(r.left() + AUG_ROW_ICON / 2.0, r.center().y),
+                    Vec2::splat(AUG_ROW_ICON),
+                );
+                let opacity = ui.opacity();
+                if dim {
+                    ui.set_opacity(opacity * 0.5);
+                }
+                self.paint_icon(ui, augment.map_or("", |a| a.icon.as_str()), ir, 7);
+                ui.set_opacity(opacity);
+                let x = ir.right() + 12.0;
+                let room = r.right() - x - 4.0;
+                let (name_ink, line_ink) = if dim {
+                    (LABEL_3, LABEL_3.gamma_multiply(0.75))
+                } else {
+                    (LABEL, LABEL_3)
+                };
+                text_at(
+                    ui,
+                    pos2(x, r.top() + 7.0),
+                    &name,
+                    FontId::new(13.5, semibold()),
+                    name_ink,
+                    room,
+                );
+                text_at(
+                    ui,
+                    pos2(x, r.top() + 25.0),
+                    &lang.picks_line(c.picks, c.wins),
+                    FontId::proportional(11.5),
+                    line_ink,
+                    room,
+                );
+                if resp
+                    .on_hover_text(lang.t(Key::AugFilterTip))
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .clicked()
+                {
+                    chosen = Some(c.id);
+                }
+            }
+        });
+        if let Some(id) = chosen {
+            self.stats_filter.augment = Some(id);
+            self.stats_tab = StatsTab::Games;
+            self.games_all = false;
+        }
     }
 
     /// One hotkey row: what it does, its key, and the button "Change". While
@@ -10162,6 +10642,7 @@ mod tests {
             scan: None,
             read: ReadView::default(),
             history: Arc::new(Vec::new()),
+            history_gen: 0,
             importing: false,
             league_found: true,
             ocr_probe: Some(true),
@@ -15792,6 +16273,7 @@ mod tests {
             scan: v.scan.clone(),
             read: v.read.clone(),
             history: v.history.clone(),
+            history_gen: v.history_gen,
             importing: v.importing,
             league_found: v.league_found,
             ocr_probe: v.ocr_probe,
@@ -16379,9 +16861,12 @@ mod tests {
         boxes.iter().filter(|(t, ..)| is_kda(t)).cloned().collect()
     }
 
+    /// The scroll of the My games page in the tests that look at rows under the header.
+    const GAMES_SCROLL: f32 = 420.0;
+
     /// The scroll offset that puts a text that sits at `y` in the window (it is `y` at offset 250) at `want`.
     fn scroll_to(y: f32, want: f32) -> f32 {
-        250.0 + y - want
+        GAMES_SCROLL + y - want
     }
 
     #[test]
@@ -16429,13 +16914,10 @@ mod tests {
                 y(lang.t(Key::GamesLast10)) < title && title < rows[0].1.center().y,
                 "{lang:?}"
             );
-            let first_champion = boxes
-                .iter()
-                .find(|(t, ..)| t.starts_with("Nunu ve Willump"))
-                .unwrap_or_else(|| panic!("{lang:?}: no champion row in {boxes:?}"));
+            // The champions are on their own tab, so the Games tab paints no champion row.
             assert!(
-                rows[9].1.center().y < first_champion.1.center().y,
-                "{lang:?}: the champions follow the games"
+                !boxes.iter().any(|(t, ..)| t.starts_with("Nunu ve Willump")),
+                "{lang:?}: the champions are not on the Games tab"
             );
             // The date and the length of the rows: the first line has the date at the right, the second the length.
             let discs = rects_where(&shapes, |r| {
@@ -16517,8 +16999,8 @@ mod tests {
                     (lengths[0].right() - dates[0].right()).abs() < 0.01,
                     "{lang:?} row {i}"
                 );
-                // The icons paint for a row in view only. The first six rows are in view in a window of 680 points.
-                if i >= 6 {
+                // The icons paint for a row in view only: a row that ends under the window has none.
+                if bottom > 680.0 {
                     continue;
                 }
                 // The augments, in pick order, from the left: 18 point tiles 3 points apart, on the second line.
@@ -16594,7 +17076,7 @@ mod tests {
             let mut app = test_app(Settings::default(), lang);
             app.page = Page::Games;
             app.debug_clock = games_clock();
-            app.debug_scroll = Some(250.0);
+            app.debug_scroll = Some(GAMES_SCROLL);
             let mut page = GamesFrames::new();
             let shapes = page.settle(&mut app, &v);
             let boxes = painted_boxes(&shapes);
@@ -16740,12 +17222,22 @@ mod tests {
         Arc::new((0..champions.len()).map(game).collect())
     }
 
-    /// The champion names that the page paints, in order.
+    /// The champion names of the list "Your champions", in order. The two quick filters over the
+    /// list repeat a name, so only the names under the title of the list count.
     fn champion_names(shapes: &[egui::epaint::ClippedShape]) -> Vec<String> {
-        painted_boxes(shapes)
+        let boxes = painted_boxes(shapes);
+        let titles = [Lang::En, Lang::Tr].map(|l| l.upper(l.t(Key::GamesYourChampions)));
+        let Some(top) = boxes
+            .iter()
+            .find(|(t, ..)| titles.contains(t))
+            .map(|b| b.1.top())
+        else {
+            return Vec::new();
+        };
+        boxes
             .into_iter()
+            .filter(|(t, r, _)| t.starts_with("Nunu ve Willump") && r.top() > top)
             .map(|b| b.0)
-            .filter(|t| t.starts_with("Nunu ve Willump"))
             .collect()
     }
 
@@ -16762,8 +17254,9 @@ mod tests {
             };
             let mut app = test_app(Settings::default(), lang);
             app.page = Page::Games;
+            app.stats_tab = StatsTab::Champions;
             app.debug_clock = games_clock();
-            app.debug_scroll = Some(250.0);
+            app.debug_scroll = Some(GAMES_SCROLL);
             let mut page = GamesFrames::new();
             let shapes = page.settle(&mut app, &v);
             // The five most played, the most games first. Champion 6 played once and is not among them.
@@ -16779,9 +17272,10 @@ mod tests {
                 .find(|(t, ..)| t == lang.t(Key::GamesAllChampions))
                 .unwrap_or_else(|| panic!("{lang:?}: {boxes:?}"))
                 .1;
+            // The quick filters repeat the name of champion 1 over the switch. The list comes after it.
             let first = boxes
                 .iter()
-                .find(|(t, ..)| t == "Nunu ve Willump 1")
+                .find(|(t, r, _)| t == "Nunu ve Willump 1" && r.top() > switch.top())
                 .unwrap()
                 .1;
             assert!(
@@ -16820,13 +17314,29 @@ mod tests {
         };
         let mut app = test_app(Settings::default(), Lang::En);
         app.page = Page::Games;
+        app.stats_tab = StatsTab::Champions;
         app.debug_clock = games_clock();
-        assert_eq!(
-            champion_names(&window_frame(&mut app, &v, None)).len(),
-            MY_CHAMPIONS
-        );
+        // A row out of view does not paint, so look at a few scroll positions. The short list
+        // is whole in the frame with the most rows. The long list is the union of all frames
+        // (the names of the quick rows are among its names).
+        let mut most = 0;
+        let mut union = std::collections::BTreeSet::new();
+        let scrolls = || (0..=40).map(|i| Some(i as f32 * 60.0));
+        for scroll in scrolls() {
+            most = most.max(champion_names(&window_frame(&mut app, &v, scroll)).len());
+        }
+        assert_eq!(most, MY_CHAMPIONS);
         app.champions_all = true;
-        assert_eq!(champion_names(&window_frame(&mut app, &v, None)).len(), 40);
+        for scroll in scrolls() {
+            let shapes = window_frame(&mut app, &v, scroll);
+            union.extend(
+                painted_boxes(&shapes)
+                    .into_iter()
+                    .map(|b| b.0)
+                    .filter(|t| t.starts_with("Nunu ve Willump")),
+            );
+        }
+        assert_eq!(union.len(), 40);
         // Five champions or fewer: there is nothing more to list, so there is no switch.
         for lang in [Lang::En, Lang::Tr] {
             let v = View {
@@ -16838,6 +17348,7 @@ mod tests {
             };
             let mut app = test_app(Settings::default(), lang);
             app.page = Page::Games;
+            app.stats_tab = StatsTab::Champions;
             let boxes = painted_boxes(&window_frame(&mut app, &v, None));
             assert!(
                 !boxes
@@ -16845,14 +17356,448 @@ mod tests {
                     .any(|(t, ..)| t == lang.t(Key::GamesAllChampions)),
                 "{lang:?}"
             );
-            assert_eq!(
-                boxes
-                    .iter()
-                    .filter(|(t, ..)| t.starts_with("Nunu ve Willump"))
-                    .count(),
-                MY_CHAMPIONS,
+            let most = (0..=40)
+                .map(|i| champion_names(&window_frame(&mut app, &v, Some(i as f32 * 60.0))).len())
+                .max();
+            assert_eq!(most, Some(MY_CHAMPIONS), "{lang:?}");
+        }
+    }
+
+    // ---- My games: the period chips, the header, the form line, the tabs and the filters.
+
+    /// A game with no date, for the tests of the champion and augment counts. Game `i` is newer
+    /// than game `i + 1`.
+    fn stat_game(i: usize, champion: i64, win: bool, augments: &[i64]) -> Game {
+        Game {
+            id: 1000 - i as i64,
+            date: String::new(),
+            queue: 2400,
+            champion,
+            augments: augments.to_vec(),
+            win,
+            kills: 5,
+            deaths: 4,
+            assists: 9,
+            secs: 1200,
+        }
+    }
+
+    /// The My games page of a history, with the data of `window_data` and the clock of `dated_games`.
+    fn stats_app(lang: Lang, history: Arc<Vec<Game>>) -> (App, View) {
+        let v = View {
+            phase: Phase::Idle,
+            offer: None,
+            sd: Some(window_data(40)),
+            history,
+            ..pick_view()
+        };
+        let mut app = test_app(Settings::default(), lang);
+        app.page = Page::Games;
+        app.debug_clock = games_clock();
+        app.debug_scroll = Some(GAMES_SCROLL);
+        (app, v)
+    }
+
+    fn has_text(boxes: &[(String, Rect, Color32)], text: &str) -> bool {
+        boxes.iter().any(|(t, ..)| t == text)
+    }
+
+    #[test]
+    fn the_period_chips_drive_the_numbers_of_the_page() {
+        for lang in [Lang::En, Lang::Tr] {
+            // The clock is 15:40 on the 29th of October in UTC+3. Game 0 is today, game 1 is
+            // yesterday, and games 2 to 5 are the 26th to the 23rd: 6 games in 7 days. Game 29 is
+            // on the 29th of September, the 31st day back, so 29 games are in 30 days.
+            let (mut app, v) = stats_app(lang, dated_games(30));
+            let want = [
+                (hstats::Period::Today, lang.totals(1, 0, 1), 1),
+                (hstats::Period::Days7, lang.totals(6, 4, 2), 6),
+                (hstats::Period::Days30, lang.totals(29, 19, 10), 10),
+                (hstats::Period::All, lang.totals(30, 20, 10), 10),
+            ];
+            for (period, totals, rows) in want {
+                app.stats_period = period;
+                let boxes = painted_boxes(&window_frame(&mut app, &v, Some(0.0)));
+                assert!(has_text(&boxes, &totals), "{lang:?} {period:?}: {boxes:?}");
+                assert_eq!(row_boxes(&boxes).len(), rows, "{lang:?} {period:?}");
+            }
+            // A period with no game says so, and has no win rate.
+            let (mut app, v) = stats_app(lang, Arc::new(vec![stat_game(0, 1, true, &[1])]));
+            app.stats_period = hstats::Period::Today;
+            let boxes = painted_boxes(&window_frame(&mut app, &v, Some(0.0)));
+            assert!(has_text(&boxes, lang.t(Key::StatsNoGames)), "{lang:?}");
+            assert!(!has_text(&boxes, lang.t(Key::GamesWinRate)), "{lang:?}");
+        }
+    }
+
+    #[test]
+    fn a_tap_on_a_period_chip_changes_the_period() {
+        for lang in [Lang::En, Lang::Tr] {
+            let (mut app, v) = stats_app(lang, dated_games(30));
+            app.debug_scroll = Some(0.0);
+            let mut page = GamesFrames::new();
+            let boxes = painted_boxes(&page.settle(&mut app, &v));
+            let today = boxes
+                .iter()
+                .find(|(t, ..)| t == lang.t(Key::PeriodToday))
+                .unwrap_or_else(|| panic!("{lang:?}: {boxes:?}"))
+                .1;
+            let boxes = painted_boxes(&page.click(&mut app, &v, today.center()));
+            assert_eq!(app.stats_period, hstats::Period::Today, "{lang:?}");
+            assert!(has_text(&boxes, &lang.totals(1, 0, 1)), "{lang:?}");
+        }
+    }
+
+    #[test]
+    fn the_header_shows_the_averages_the_length_and_a_streak_from_three_games() {
+        for lang in [Lang::En, Lang::Tr] {
+            // 15 wins in a row: a streak of 15. The kills are 0 to 14 (7 on average), the deaths 4
+            // and the assists 9, so KDA is (7 + 9) / 4.
+            let (mut app, v) = stats_app(lang, games_of_six_champions());
+            let boxes = painted_boxes(&window_frame(&mut app, &v, Some(0.0)));
+            let streak = lang.fmt(Key::StatsStreakWin, &[&15]);
+            assert!(has_text(&boxes, &streak), "{lang:?}: {boxes:?}");
+            let one = |v: f32| lang.num(v, 1);
+            let avg = lang.fmt(Key::StatsAvg, &[&one(7.0), &one(4.0), &one(9.0)]);
+            let kda = lang.fmt(Key::StatsKda, &[&one(4.0)]);
+            assert!(
+                has_text(&boxes, &format!("{avg} · {kda}")),
+                "{lang:?}: {boxes:?}"
+            );
+            assert!(
+                has_text(&boxes, &lang.fmt(Key::StatsAvgLength, &[&"20:00"])),
                 "{lang:?}"
             );
+            // The newest game of `dated_games` is a loss, and a run of one shows no streak.
+            let (mut app, v) = stats_app(lang, dated_games(30));
+            let boxes = painted_boxes(&window_frame(&mut app, &v, Some(0.0)));
+            let word = lang.fmt(Key::StatsStreakWin, &[&1]);
+            let word = word.split(' ').next().unwrap();
+            assert!(
+                !boxes.iter().any(|(t, ..)| t.starts_with(word)),
+                "{lang:?}: no streak under three games"
+            );
+            // A loss streak reads with the letter of a loss.
+            let losses: Vec<Game> = (0..4).map(|i| stat_game(i, 1, false, &[1])).collect();
+            let (mut app, v) = stats_app(lang, Arc::new(losses));
+            let boxes = painted_boxes(&window_frame(&mut app, &v, Some(0.0)));
+            assert!(
+                has_text(&boxes, &lang.fmt(Key::StatsStreakLoss, &[&4])),
+                "{lang:?}: {boxes:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_form_line_shows_from_ten_games() {
+        for lang in [Lang::En, Lang::Tr] {
+            let title = |n: u32| lang.upper(&lang.fmt(Key::StatsForm, &[&n]));
+            let (mut app, v) = stats_app(lang, dated_games(30));
+            let boxes = painted_boxes(&window_frame(&mut app, &v, Some(0.0)));
+            assert!(has_text(&boxes, &title(30)), "{lang:?}: {boxes:?}");
+            // 120 games: the line covers the newest 50.
+            let (mut app, v) = stats_app(lang, dated_games(120));
+            let boxes = painted_boxes(&window_frame(&mut app, &v, Some(0.0)));
+            assert!(has_text(&boxes, &title(50)), "{lang:?}");
+            // Nine games are too few.
+            let (mut app, v) = stats_app(lang, dated_games(9));
+            let boxes = painted_boxes(&window_frame(&mut app, &v, Some(0.0)));
+            assert!(
+                !boxes
+                    .iter()
+                    .any(|(t, ..)| *t == title(9) || *t == title(30)),
+                "{lang:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_augments_tab_shows_counts_and_never_a_percent_or_a_result_color() {
+        for lang in [Lang::En, Lang::Tr] {
+            // `dated_games`: augment 1 in all 30 games (20 wins), 2 in 29 (19 wins), 3 and 7 in
+            // game 4 (a win), and 99 (the data does not know it) in game 5 (a win).
+            let (mut app, v) = stats_app(lang, dated_games(30));
+            app.stats_tab = StatsTab::Augments;
+            let boxes = painted_boxes(&window_frame(&mut app, &v, Some(350.0)));
+            let title = lang.upper(lang.t(Key::AugmentsTitle));
+            let top = boxes
+                .iter()
+                .find(|(t, ..)| *t == title)
+                .unwrap_or_else(|| panic!("{lang:?}: {boxes:?}"))
+                .1
+                .top();
+            let under: Vec<_> = boxes.iter().filter(|(_, r, _)| r.top() >= top).collect();
+            for (picks, wins) in [(30, 20), (29, 19), (1, 1)] {
+                assert!(
+                    under
+                        .iter()
+                        .any(|(t, ..)| *t == lang.picks_line(picks, wins)),
+                    "{lang:?} {picks}: {under:?}"
+                );
+            }
+            assert!(
+                under.iter().any(|(t, ..)| t == lang.t(Key::AugNote)),
+                "{lang:?}"
+            );
+            assert!(
+                under
+                    .iter()
+                    .all(|(t, _, ink)| !t.contains('%') && *ink != GREEN && *ink != RED),
+                "{lang:?}: {under:?}"
+            );
+            // The most picked first, and a row with fewer than five picks is dimmed.
+            let name = |id: i64| format!("Sonsuz Güç ve Zamanlama {id}");
+            let at = |id: i64| under.iter().find(|(t, ..)| *t == name(id)).unwrap();
+            assert!(
+                at(1).1.top() < at(2).1.top() && at(2).1.top() < at(3).1.top(),
+                "{lang:?}"
+            );
+            assert_eq!(
+                (at(1).2, at(2).2, at(3).2),
+                (LABEL, LABEL, LABEL_3),
+                "{lang:?}"
+            );
+            // The unknown augment keeps a row with its number.
+            assert!(under.iter().any(|(t, ..)| t == "#99"), "{lang:?}");
+        }
+    }
+
+    #[test]
+    fn a_tap_on_an_augment_row_filters_the_games_and_the_chip_takes_the_filter_off() {
+        for lang in [Lang::En, Lang::Tr] {
+            let (mut app, v) = stats_app(lang, dated_games(30));
+            app.stats_tab = StatsTab::Augments;
+            let mut page = GamesFrames::new();
+            let boxes = painted_boxes(&page.settle(&mut app, &v));
+            let row = boxes
+                .iter()
+                .find(|(t, ..)| *t == "Sonsuz Güç ve Zamanlama 3")
+                .unwrap_or_else(|| panic!("{lang:?}: {boxes:?}"))
+                .1;
+            // Augment 3 is in game 4 only (a win with champion 5): one game, a win.
+            let at = pos2(MARGIN + 150.0, row.center().y);
+            page.click(&mut app, &v, at);
+            // The header is at the top of the page.
+            app.debug_scroll = Some(0.0);
+            let boxes = painted_boxes(&page.settle(&mut app, &v));
+            assert_eq!(app.stats_filter.augment, Some(3), "{lang:?}");
+            assert_eq!(app.stats_tab, StatsTab::Games, "{lang:?}");
+            assert!(
+                has_text(&boxes, &lang.totals(1, 1, 0)),
+                "{lang:?}: {boxes:?}"
+            );
+            assert_eq!(row_boxes(&boxes).len(), 1, "{lang:?}");
+            let chip = boxes
+                .iter()
+                .find(|(t, ..)| *t == "Sonsuz Güç ve Zamanlama 3")
+                .unwrap()
+                .1;
+            // A tap on the chip takes the filter off and the numbers are whole again.
+            let boxes = painted_boxes(&page.click(&mut app, &v, chip.center()));
+            assert_eq!(app.stats_filter, hstats::Filter::default(), "{lang:?}");
+            assert!(has_text(&boxes, &lang.totals(30, 20, 10)), "{lang:?}");
+        }
+    }
+
+    #[test]
+    fn a_filter_changes_the_header_and_both_filters_work_together() {
+        let (mut app, v) = stats_app(Lang::En, dated_games(30));
+        // Champion 1 played game 0 only (a loss).
+        app.stats_filter.champion = Some(1);
+        let boxes = painted_boxes(&window_frame(&mut app, &v, Some(0.0)));
+        assert!(has_text(&boxes, &Lang::En.totals(1, 0, 1)));
+        // Augment 99 is in game 5 (champion 6) only, so the two filters leave no game.
+        app.stats_filter.champion = Some(2);
+        app.stats_filter.augment = Some(99);
+        let boxes = painted_boxes(&window_frame(&mut app, &v, Some(0.0)));
+        assert!(has_text(&boxes, Lang::En.t(Key::StatsNoGames)));
+        assert!(has_text(&boxes, "Nunu ve Willump 2") && has_text(&boxes, "#99"));
+    }
+
+    #[test]
+    fn the_champions_tab_names_the_most_played_and_the_most_wins_from_three_games() {
+        // Champion 1: 5 games, 2 wins. Champion 2: 3 games, 3 wins. Champion 3: 2 games, 2 wins
+        // (too few games to show).
+        let mut games = Vec::new();
+        for (champion, wins, total) in [(1, 2, 5), (2, 3, 3), (3, 2, 2)] {
+            for k in 0..total {
+                games.push(stat_game(games.len(), champion, k < wins, &[1]));
+            }
+        }
+        for lang in [Lang::En, Lang::Tr] {
+            let (mut app, v) = stats_app(lang, Arc::new(games.clone()));
+            app.stats_tab = StatsTab::Champions;
+            let mut page = GamesFrames::new();
+            let boxes = painted_boxes(&page.settle(&mut app, &v));
+            let label = |key| {
+                boxes
+                    .iter()
+                    .find(|(t, ..)| t == lang.t(key))
+                    .unwrap_or_else(|| panic!("{lang:?}: {boxes:?}"))
+                    .1
+            };
+            let (played, wins) = (label(Key::ChampMostPlayed), label(Key::ChampMostWins));
+            let name_under = |label: Rect| {
+                boxes
+                    .iter()
+                    .filter(|(t, r, _)| {
+                        t.starts_with("Nunu ve Willump")
+                            && r.top() > label.top()
+                            && r.top() < label.top() + 30.0
+                    })
+                    .map(|b| b.0.clone())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(name_under(played), ["Nunu ve Willump 1"], "{lang:?}");
+            assert_eq!(name_under(wins), ["Nunu ve Willump 2"], "{lang:?}");
+            // The wording never ranks the champions.
+            let all: String = boxes.iter().map(|b| b.0.to_lowercase() + "|").collect();
+            for word in ["best", "worst", "hardest", "en iyi", "en kötü"] {
+                assert!(!all.contains(word), "{lang:?}: {word}");
+            }
+            // A tap on the "most wins" row filters the games by champion 2.
+            let at = pos2(MARGIN + 150.0, wins.center().y);
+            page.click(&mut app, &v, at);
+            app.debug_scroll = Some(0.0);
+            let boxes = painted_boxes(&page.settle(&mut app, &v));
+            assert_eq!(app.stats_filter.champion, Some(2), "{lang:?}");
+            assert_eq!(app.stats_tab, StatsTab::Games, "{lang:?}");
+            assert!(
+                has_text(&boxes, &lang.totals(3, 3, 0)),
+                "{lang:?}: {boxes:?}"
+            );
+        }
+        // With no champion at three games, the two rows are not there.
+        let two: Vec<Game> = (0..4)
+            .map(|i| stat_game(i, 1 + i as i64 % 2, true, &[1]))
+            .collect();
+        let (mut app, v) = stats_app(Lang::En, Arc::new(two));
+        app.stats_tab = StatsTab::Champions;
+        let boxes = painted_boxes(&window_frame(&mut app, &v, Some(0.0)));
+        assert!(!has_text(&boxes, Lang::En.t(Key::ChampMostPlayed)));
+        assert!(!has_text(&boxes, Lang::En.t(Key::ChampMostWins)));
+    }
+
+    #[test]
+    fn the_numbers_are_counted_again_only_when_the_history_or_the_choice_changes() {
+        let (mut app, v) = stats_app(Lang::En, dated_games(30));
+        window_frame(&mut app, &v, Some(0.0));
+        window_frame(&mut app, &v, Some(0.0));
+        assert_eq!(
+            app.stats_builds, 1,
+            "six frames twice with the same history"
+        );
+        // The same generation stays cached, even for a new `Arc` of the list.
+        let again = View {
+            history: Arc::new((*v.history).clone()),
+            ..base_clone(&v)
+        };
+        window_frame(&mut app, &again, Some(0.0));
+        assert_eq!(
+            app.stats_builds, 1,
+            "the key is the generation, not the pointer"
+        );
+        // A new generation counts again, and so does a new period, filter or tab.
+        let saved = View {
+            history_gen: 1,
+            ..base_clone(&v)
+        };
+        window_frame(&mut app, &saved, Some(0.0));
+        assert_eq!(app.stats_builds, 2);
+        app.stats_period = hstats::Period::Days7;
+        window_frame(&mut app, &saved, Some(0.0));
+        assert_eq!(app.stats_builds, 3);
+        app.stats_tab = StatsTab::Augments;
+        window_frame(&mut app, &saved, Some(0.0));
+        assert_eq!(app.stats_builds, 4);
+        app.stats_filter.champion = Some(1);
+        window_frame(&mut app, &saved, Some(0.0));
+        assert_eq!(app.stats_builds, 5);
+    }
+
+    #[test]
+    fn the_stats_texts_fit_in_both_languages() {
+        let ctx = egui::Context::default();
+        theme::setup(&ctx);
+        // The inside of a group in the 300 point window: the margins of the page and the card.
+        let inner = MAIN_W - 2.0 * MARGIN - 24.0;
+        for lang in [Lang::En, Lang::Tr] {
+            let line = |text: &str, font: FontId| text_width(&ctx, text, font);
+            let kda = lang.fmt(Key::StatsKda, &[&"12.5"]);
+            let avg = lang.fmt(Key::StatsAvg, &[&"12.5", &"10.5", &"20.5"]);
+            for text in [
+                format!("{avg} · {kda}"),
+                lang.fmt(Key::StatsAvgLength, &[&"59:59"]),
+                lang.picks_line(1000, 999),
+                lang.picks_line(1, 0),
+                lang.fmt(Key::StatsStreakWin, &[&100]),
+                lang.fmt(Key::StatsStreakLoss, &[&100]),
+            ] {
+                let w = line(&text, FontId::proportional(12.0));
+                assert!(w <= inner, "{lang:?} {text}: {w:.1} of {inner}");
+            }
+            // The title of the form line is one line in capital letters over the card.
+            let head = line(
+                &lang.upper(&lang.fmt(Key::StatsForm, &[&50])),
+                FontId::new(11.0, semibold()),
+            );
+            assert!(head <= inner + 24.0, "{lang:?} form title: {head:.1}");
+            // The note of the Augments tab wraps, so it needs at most two lines.
+            let w = line(lang.t(Key::AugNote), FontId::proportional(12.0));
+            assert!(w <= 2.0 * (MAIN_W - 2.0 * MARGIN), "{lang:?} note: {w:.1}");
+            // Each label of a period chip or a tab fits its share of the control.
+            let periods = [
+                Key::PeriodToday,
+                Key::Period7,
+                Key::Period30,
+                Key::PeriodAll,
+            ];
+            let tabs = [Key::TabGames, Key::TabChampions, Key::TabAugments];
+            for set in [&periods[..], &tabs[..]] {
+                let room = (MAIN_W - 2.0 * MARGIN - 4.0) / set.len() as f32;
+                for key in set {
+                    let w = line(lang.t(*key), FontId::new(12.5, semibold())) + kit::SEGMENT_PAD;
+                    assert!(w <= room, "{lang:?} {key:?}: {w:.1} of {room}");
+                }
+            }
+            // The label of a quick-filter row shares the line with the icon.
+            let room = inner - 48.0 - 52.0;
+            for key in [Key::ChampMostPlayed, Key::ChampMostWins] {
+                let w = line(lang.t(key), FontId::proportional(11.5));
+                assert!(w <= room, "{lang:?} {key:?}: {w:.1} of {room}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_filter_chip_with_a_long_name_stays_inside_the_page() {
+        let ctx = egui::Context::default();
+        theme::setup(&ctx);
+        let room = MAIN_W - 2.0 * MARGIN;
+        let long = "Nunu ve Willump Çok Uzun Bir Şampiyon Adı Ve Daha Da Uzun Bir Eklenti Adı";
+        let mut width = 0.0;
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(room, 600.0))),
+            ..Default::default()
+        };
+        ctx.run_ui(input, |ui| {
+            let before = ui.cursor().min.x;
+            filter_chip(ui, long, "x");
+            width = ui.min_rect().right() - before;
+        })
+        .drop_without_applying_deltas();
+        assert!(width <= room, "chip: {width:.1} of {room}");
+    }
+
+    #[test]
+    fn the_form_tip_names_the_window_of_the_form_line() {
+        for lang in [Lang::En, Lang::Tr] {
+            let tip = lang.fmt(Key::StatsFormTip, &[&hstats::FORM_WINDOW]);
+            assert!(
+                tip.contains(&hstats::FORM_WINDOW.to_string()),
+                "{lang:?}: {tip}"
+            );
+            assert!(!tip.contains('{'), "{lang:?}: {tip}");
         }
     }
 
@@ -16870,6 +17815,7 @@ mod tests {
             let mut app = test_app(Settings::default(), lang);
             app.page = Page::Games;
             app.debug_clock = games_clock();
+            app.debug_scroll = Some(GAMES_SCROLL);
             let mut page = GamesFrames::new();
             let boxes = painted_boxes(&page.settle(&mut app, &v));
             // Row 4 is a win with champion 5 and six augments: 1, 2, 3, 7, 1, 2 (the data names 1, 2, 3 and 7).

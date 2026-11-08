@@ -6,6 +6,7 @@ mod cache;
 mod data;
 mod datalog;
 mod history;
+mod hstats;
 mod i18n;
 mod itemset;
 mod kit;

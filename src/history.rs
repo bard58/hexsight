@@ -20,7 +20,7 @@
 use crate::model::is_mayhem;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 /// The file keeps this many games. The oldest games go first.
@@ -341,65 +341,6 @@ pub fn save(path: &Path, games: &[Game]) -> Result<(), String> {
             let _ = std::fs::remove_file(&tmp);
             e.to_string()
         })
-}
-
-// ---------------------------------------------------------------------------
-// Numbers for the "My games" page.
-
-/// Games and wins of one champion, or of all games.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Tally {
-    pub games: u32,
-    pub wins: u32,
-}
-
-impl Tally {
-    /// Share of won games, 0 to 1. Zero without games.
-    pub fn rate(&self) -> f32 {
-        if self.games == 0 {
-            0.0
-        } else {
-            self.wins as f32 / self.games as f32
-        }
-    }
-
-    fn add(&mut self, win: bool) {
-        self.games += 1;
-        self.wins += u32::from(win);
-    }
-}
-
-/// The whole list in numbers.
-#[derive(Debug, Default)]
-pub struct Summary {
-    pub total: Tally,
-    /// Champions you played, most games first.
-    pub champions: Vec<(i64, Tally)>,
-}
-
-/// Most games first, then most wins, then the lowest id (a stable order).
-fn by_games(map: HashMap<i64, Tally>) -> Vec<(i64, Tally)> {
-    let mut v: Vec<(i64, Tally)> = map.into_iter().collect();
-    v.sort_by(|a, b| {
-        b.1.games
-            .cmp(&a.1.games)
-            .then(b.1.wins.cmp(&a.1.wins))
-            .then(a.0.cmp(&b.0))
-    });
-    v
-}
-
-pub fn summarize(games: &[Game]) -> Summary {
-    let mut total = Tally::default();
-    let mut champions: HashMap<i64, Tally> = HashMap::new();
-    for g in games {
-        total.add(g.win);
-        champions.entry(g.champion).or_default().add(g.win);
-    }
-    Summary {
-        total,
-        champions: by_games(champions),
-    }
 }
 
 #[cfg(test)]
@@ -744,31 +685,6 @@ mod tests {
             "{ not json"
         );
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    fn sample() -> Vec<Game> {
-        vec![
-            rec(4, "2026-10-04T10:00:00Z", 157, &[10, 20], true),
-            rec(3, "2026-10-03T10:00:00Z", 157, &[10, 30], true),
-            rec(2, "2026-10-02T10:00:00Z", 51, &[10, 20], false),
-            rec(1, "2026-10-01T10:00:00Z", 157, &[10, 10], false),
-        ]
-    }
-
-    #[test]
-    fn the_numbers_follow_the_games() {
-        let s = summarize(&sample());
-        assert_eq!(s.total, Tally { games: 4, wins: 2 });
-        assert_eq!(
-            s.champions,
-            vec![
-                (157, Tally { games: 3, wins: 2 }),
-                (51, Tally { games: 1, wins: 0 })
-            ]
-        );
-        assert!((s.total.rate() - 0.5).abs() < 1e-6);
-        assert_eq!(Tally::default().rate(), 0.0);
-        assert!(summarize(&[]).total.games == 0);
     }
 
     #[test]

@@ -254,6 +254,44 @@ table! {
     GamesShowLess = "Show fewer", "Daha az göster";
     // The switch above the champions: the five most played, or every champion with a game.
     GamesAllChampions = "All champions", "Tüm şampiyonlar";
+    // The period chips above the numbers. They filter every number on the page.
+    PeriodToday = "Today", "Bugün";
+    Period7 = "7 days", "7 gün";
+    Period30 = "30 days", "30 gün";
+    PeriodAll = "All", "Tümü";
+    // The tabs under the numbers.
+    TabGames = "Games", "Oyunlar";
+    TabChampions = "Champions", "Şampiyonlar";
+    TabAugments = "Augments", "Eklentiler";
+    // The current run of wins or losses, from three games on. {0} is the length of the run.
+    // English writes W and L, Turkish writes G (galibiyet) and M (mağlubiyet).
+    StatsStreakWin = "Streak {0}W", "Seri {0}G";
+    StatsStreakLoss = "Streak {0}L", "Seri {0}M";
+    // The average score and the KDA ratio, and the average length of a game.
+    // {0}, {1} and {2} are the average kills, deaths and assists.
+    StatsAvg = "Avg {0} / {1} / {2}", "Ort. {0} / {1} / {2}";
+    StatsKda = "KDA {0}", "KDA {0}";
+    StatsAvgLength = "Avg length {0}", "Ort. süre {0}";
+    // The title of the line chart of the rolling win rate. {0} is the number of games it covers.
+    StatsForm = "Form · last {0} games", "Gidişat · son {0} maç";
+    // {0} is the number of games behind each point.
+    StatsFormTip = "Win rate of the last {0} games at each point. The line marks 50 %.",
+        "Her noktada son {0} maçın kazanma oranı. Çizgi %50’yi gösterir.";
+    // A period or a filter that leaves no game.
+    StatsNoGames = "No games match", "Uyan maç yok";
+    // The chips that show an active filter, and the tip of their remove mark.
+    FilterRemove = "Remove this filter", "Bu filtreyi kaldır";
+    // The augments tab: your own picks as counts, never as a rate. {0} is the number.
+    AugmentsTitle = "Your augments", "Eklentilerin";
+    AugPick1 = "{0} pick", "{0} kez seçildi";
+    AugPicks = "{0} picks", "{0} kez seçildi";
+    AugNote = "Your games only. Small samples prove little.",
+        "Sadece senin oyunların. Az oyun pek bir şey kanıtlamaz.";
+    AugFilterTip = "Show only the games with this augment", "Sadece bu eklentili maçları göster";
+    // The champions tab: two quick filters among the champions with at least three games.
+    ChampMostPlayed = "Most played", "En çok oynanan";
+    ChampMostWins = "Most wins", "En çok kazanan";
+    ChampFilterTip = "Show only the games of this champion", "Sadece bu şampiyonun maçlarını göster";
     // The result of a row, as a letter next to the disc or the ring. They are the letters of the
     // "Last 10" score: W and L in English, G (galibiyet) and M (mağlubiyet) in Turkish.
     GameWinShort = "W", "G";
@@ -666,6 +704,20 @@ impl Lang {
         self.fmt(if n == 1 { Key::CapWin1 } else { Key::CapWins }, &[&n])
     }
 
+    /// The counts of one augment: "1 pick, 0 wins", "7 picks, 3 wins" ("7 kez seçildi, 3
+    /// galibiyet" in Turkish). Counts only, never a rate.
+    pub fn picks_line(self, picks: u32, wins: u32) -> String {
+        let picks = self.fmt(
+            if picks == 1 {
+                Key::AugPick1
+            } else {
+                Key::AugPicks
+            },
+            &[&picks],
+        );
+        format!("{picks}, {}", self.wins(wins))
+    }
+
     /// The totals line of My games: "62 games · 37W 25L" ("62 maç · 37G 25M" in
     /// Turkish). The short score keeps the line on one row at 300 points.
     pub fn totals(self, games: u32, wins: u32, losses: u32) -> String {
@@ -858,6 +910,7 @@ mod tests {
             Key::ReasonVsAdNamed,
             Key::MonthMar,
             Key::MonthMay,
+            Key::StatsKda,
         ];
         for key in KEYS.iter().filter(|k| !same.contains(k)) {
             let (en, tr) = (Lang::En.t(*key), Lang::Tr.t(*key));

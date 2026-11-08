@@ -266,6 +266,9 @@ pub struct Shared {
     /// The saved games of the player, newest first. The history thread
     /// replaces the list when it adds a game.
     pub history: Arc<Vec<Game>>,
+    /// Grows by one each time the history thread replaces `history`. The page keys its cached
+    /// numbers by this value, not by the `Arc` address.
+    pub history_gen: u64,
     /// `history.json` exists, or the first import ran. A sync that finds no new
     /// game then does not write the file again.
     pub history_ready: bool,
@@ -1784,6 +1787,7 @@ fn save_games(shared: &Mutex<Shared>, ctx: &egui::Context, new: Vec<Game>, toast
     let saved = history::save(&history::path(), &list);
     let mut s = shared.lock().unwrap();
     s.history = Arc::new(list);
+    s.history_gen += 1;
     s.history_ready = true;
     let lang = s.lang;
     match (saved, toast) {
