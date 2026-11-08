@@ -606,6 +606,50 @@ fn kit_magic_share(stats: &Value) -> Option<f32> {
     (phys + magic > 0.0).then(|| magic / (phys + magic))
 }
 
+/// The fewest games over all routes behind a later item of a path.
+const PATH_LATER_MIN_GAMES: u32 = 50;
+
+/// The build paths of one style (`archetype`): each profile with `ITEM_MIN_GAMES` games or more,
+/// in the order of the source. `style` is the index of the style in `ChampStats::builds`. The
+/// later items pool the games of all routes of the profile. Only counts are read: no win rate.
+fn kit_paths(archetype: &Value, style: u8) -> Vec<Path> {
+    arr(&archetype["profiles"])
+        .filter(|p| u(&p["sampleCount"]) >= ITEM_MIN_GAMES)
+        .map(|p| {
+            let mut routes: Vec<(Vec<i64>, u32)> = arr(&p["routes"])
+                .map(|r| (ids(&r["purchaseOrder"]), u(&r["sampleCount"])))
+                .filter(|(order, _)| !order.is_empty())
+                .collect();
+            // Most played first. The sort is stable, so a tie keeps the source order.
+            routes.sort_by_key(|r| std::cmp::Reverse(r.1));
+            let mut later: Vec<(i64, u32)> = Vec::new();
+            for row in arr(&p["routes"]).flat_map(|r| arr(&r["laterItems"])) {
+                let Some(id) = row["item"]["id"].as_i64() else {
+                    continue;
+                };
+                if id <= 0 || CONSUMABLES.contains(&id) {
+                    continue;
+                }
+                let n = u(&row["sampleCount"]);
+                match later.iter_mut().find(|(i, _)| *i == id) {
+                    Some(r) => r.1 += n,
+                    None => later.push((id, n)),
+                }
+            }
+            later.retain(|&(_, n)| n >= PATH_LATER_MIN_GAMES);
+            later.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+            Path {
+                style,
+                core: ids(&p["itemSet"]),
+                games: u(&p["sampleCount"]),
+                route_games: routes.iter().map(|r| r.1).sum(),
+                routes,
+                later,
+            }
+        })
+        .collect()
+}
+
 pub fn kit_champion(d: &Value) -> ChampStats {
     let augs = &d["augments"];
     let mut out = ChampStats {
@@ -630,6 +674,8 @@ pub fn kit_champion(d: &Value) -> ChampStats {
         slots: kit_slots(&d["items"]),
         aug_links: kit_aug_links(&d["items"]),
         magic_share: kit_magic_share(&d["champion"]["stats"]),
+        paths: Vec::new(),
+        style_games: Vec::new(),
     };
     // Sort by tier, then win rate. Ignore rows with tiny samples at the end.
     let key = |a: &AugStat| (a.games < 300, a.tier);
@@ -672,6 +718,10 @@ pub fn kit_champion(d: &Value) -> ChampStats {
         let later = route
             .map(|r| ranked_ids(&r["laterItems"]))
             .unwrap_or_default();
+        // The paths of this style keep the index of its build, so they stay aligned when a style is skipped.
+        let style = out.builds.len() as u8;
+        out.paths.extend(kit_paths(a, style));
+        out.style_games.push(u(&a["sampleCount"]));
         // The core items of the other profiles, most played first, for the block "Situational".
         let situational = profiles
             .iter()
@@ -843,6 +893,70 @@ mod tests {
         assert_eq!(b.boots[..2], [3020, 3008]);
         // The other profiles, most played first, without the core items.
         assert_eq!(b.situational, vec![4645, 3118, 3089, 3157]);
+    }
+
+    /// The build paths of the real Heimerdinger file: every profile with 300 games or more, its
+    /// routes and its later items pooled over the routes. The numbers are sums of `sampleCount` in
+    /// `tests/fixtures/heimerdinger-suggest.json`.
+    #[test]
+    fn the_paths_of_the_real_heimerdinger_file() {
+        let cs = kit_champion(&serde_json::from_str(HEIMER_SUGGEST).unwrap());
+        let ap: Vec<&Path> = cs.paths.iter().filter(|p| p.style == 0).collect();
+        assert_eq!(ap.len(), 5);
+        assert_eq!(cs.style_games, vec![254_861]);
+        // The source order: P3 is the mainstream profile, P5 the Malignance one.
+        assert_eq!(ap[2].core, vec![6653, 2503, 3116]);
+        assert_eq!(ap[2].games, 126_203);
+        assert_eq!(ap[4].core, vec![3118, 6653, 3116]);
+        // 9314 + 68935 + 33719 + 7697 and 6099 + 1005 + 4981.
+        assert_eq!(ap[2].route_games, 119_665);
+        assert_eq!(ap[4].route_games, 12_085);
+        // The routes go most played first.
+        assert_eq!(ap[2].routes[0], (vec![2503, 6653, 3116], 68_935));
+        assert!(ap[2].routes.windows(2).all(|w| w[0].1 >= w[1].1));
+        // Rabadon's Deathcap after the core of P3, over its four routes.
+        let n = |p: &Path, id| p.later.iter().find(|r| r.0 == id).map(|r| r.1);
+        assert_eq!(n(ap[2], 3089), Some(46_785));
+        assert_eq!(ap[2].later[0], (3089, 46_785));
+        // No id 0, no potion, and no row under 50 games.
+        for p in &ap {
+            assert!(p.later.iter().all(|&(id, n)| id > 0 && n >= 50));
+            assert!(p.later.iter().all(|(id, _)| !CONSUMABLES.contains(id)));
+        }
+    }
+
+    #[test]
+    fn a_path_keeps_the_index_of_its_build_and_small_profiles_stay_out() {
+        // The style "a" has no profile, so it gives no build: "b" is build 0 and its paths say 0.
+        let d: Value = serde_json::from_str(
+            r#"{"builds":{"filtered":{"archetypes":[
+              {"key":"a","pickRate":0.5,"sampleCount":9000,"profiles":[]},
+              {"key":"b","pickRate":0.3,"sampleCount":5000,"profiles":[
+                {"sampleCount":4000,"itemSet":[{"id":1},{"id":2}],"routes":[
+                  {"sampleCount":100,"purchaseOrder":[{"id":2},{"id":1}],"laterItems":[
+                    {"sampleCount":40,"item":{"id":5}},{"sampleCount":30,"item":{"id":2003}},
+                    {"sampleCount":30,"item":{"id":0}},{"sampleCount":45,"item":{"id":6}}]},
+                  {"sampleCount":300,"purchaseOrder":[{"id":1},{"id":2}],"laterItems":[
+                    {"sampleCount":40,"item":{"id":5}},{"sampleCount":30,"item":{"id":2003}}]}]},
+                {"sampleCount":299,"itemSet":[{"id":3}]}]},
+              {"key":"c","pickRate":0.1,"sampleCount":700,"profiles":[
+                {"sampleCount":300,"itemSet":[{"id":4}]}]}]}}}"#,
+        )
+        .unwrap();
+        let cs = kit_champion(&d);
+        assert_eq!(cs.builds.len(), 2);
+        assert_eq!(cs.style_games, vec![5000, 700]);
+        assert_eq!(cs.paths.len(), 2);
+        let b = &cs.paths[0];
+        assert_eq!((b.style, b.core.clone(), b.games), (0, vec![1, 2], 4000));
+        assert_eq!(b.routes, vec![(vec![1, 2], 300), (vec![2, 1], 100)]);
+        assert_eq!(b.route_games, 400);
+        // 5 pools to 80. The potion, the id 0 and 6 (45 games) stay out.
+        assert_eq!(b.later, vec![(5, 80)]);
+        assert_eq!((cs.paths[1].style, cs.paths[1].core.clone()), (1, vec![4]));
+        assert!(cs.paths[1].routes.is_empty());
+        // An empty file gives no path.
+        assert!(kit_champion(&serde_json::json!({})).paths.is_empty());
     }
 
     fn one_build(archetypes: &str) -> Build {

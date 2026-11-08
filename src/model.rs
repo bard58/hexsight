@@ -60,6 +60,25 @@ pub struct Build {
     pub skills: String,
 }
 
+/// One build path of the data: a profile of a style (its first three finished items, in any
+/// order) with enough games. The path tracker (`suggest::path`) finds the path that your items
+/// follow. It holds counts only: no win rate and no pick rate.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Path {
+    /// The index of the style in `ChampStats::builds`.
+    pub style: u8,
+    /// The core items of the profile (`itemSet`).
+    pub core: Vec<i64>,
+    /// The games of the profile.
+    pub games: u32,
+    /// The buying orders of the core and their games, most played first.
+    pub routes: Vec<(Vec<i64>, u32)>,
+    /// The games of all routes together.
+    pub route_games: u32,
+    /// The items bought after the core, with their games over all routes, most bought first.
+    pub later: Vec<(i64, u32)>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Combo {
     pub augments: Vec<i64>,
@@ -179,6 +198,10 @@ pub struct ChampStats {
     /// The share of magic damage in the damage that the champion deals to champions
     /// (0 to 1). `None` when the source gives no damage.
     pub magic_share: Option<f32>,
+    /// The build paths of all styles (`Path::style` gives the style). Empty when the source has none.
+    pub paths: Vec<Path>,
+    /// The games of each style, indexed like `builds`.
+    pub style_games: Vec<u32>,
 }
 
 impl ChampStats {
