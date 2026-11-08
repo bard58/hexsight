@@ -24,6 +24,7 @@ All notable changes to this project are in this file. The format follows [Keep a
 - Your AP or AD class and the tank build now come from the core items of your build.
 - A tip from a rule of Hexsight now takes the third place before your first finished item only when its points are close to the next item.
 - A damage item with armor or magic resist, such as Zhonya's Hourglass, no longer makes an enemy count as tanky.
+- The footer of the main window now shows the day of the data in place of the game count, for example "Patch 16.22 · Data: Oct 25" ("16.22 yaması · Veri: 25 Eki"). It says "Today" or "Yesterday" for a new update. The game count moves to the tooltip. The aramhex fallback has no date and keeps the game count.
 
 ### Added
 

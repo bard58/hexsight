@@ -287,6 +287,19 @@ impl Stats {
         }
     }
 
+    /// The same stats with the data path of an aramkit version, for the tests of the footer.
+    #[cfg(test)]
+    pub fn with_data_path(mut self, path: &str) -> Stats {
+        self.data_path = path.into();
+        self
+    }
+
+    /// The day that aramkit made these numbers, from the data path of the version. `None` for
+    /// the aramhex fallback and for a path without a valid date.
+    pub fn data_date(&self) -> Option<(i64, u32, u32)> {
+        version_date(&self.data_path)
+    }
+
     pub fn load(agent: &ureq::Agent) -> Result<Stats, LoadError> {
         match Self::load_aramkit(agent) {
             Ok(s) => Ok(s),
@@ -406,6 +419,29 @@ impl Stats {
             Err(f) => Err(no_stats(f.why, self.champions.contains_key(&id))),
         }
     }
+}
+
+/// The date (year, month 1 to 12, day) in an aramkit version: "16.21-20261025-56d26ac2ef6f",
+/// or its data path "data/16.21-20261025-56d26ac2ef6f", gives (2026, 10, 25). The middle part
+/// is YYYYMMDD. `None` when it is missing or is not a real date.
+pub fn version_date(version: &str) -> Option<(i64, u32, u32)> {
+    let name = version.rsplit('/').next()?;
+    let part = name.split('-').nth(1)?;
+    if part.len() != 8 || !part.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let (year, month, day) = (
+        part[..4].parse::<i64>().ok()?,
+        part[4..6].parse::<u32>().ok()?,
+        part[6..].parse::<u32>().ok()?,
+    );
+    // A day that is not in the calendar (2026-02-30) does not come back the same.
+    let date = (year, month, day);
+    ((1..=12).contains(&month)
+        && day >= 1
+        && crate::history::civil_from_days(crate::history::days_from_civil(year, month, day))
+            == date)
+        .then_some(date)
 }
 
 /// Why `Stats::champion` gave no stats.
@@ -1326,6 +1362,41 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![3036]
         );
+    }
+
+    #[test]
+    fn the_version_of_aramkit_gives_the_day_of_its_data() {
+        assert_eq!(
+            version_date("16.21-20261025-56d26ac2ef6f"),
+            Some((2026, 10, 25))
+        );
+        assert_eq!(
+            version_date("data/16.21-20261028-630a0df07f2a"),
+            Some((2026, 10, 28))
+        );
+        assert_eq!(version_date("16.21-20240229-abc"), Some((2024, 2, 29)));
+        // A missing part, a wrong length, letters, or a day out of the calendar give no date.
+        for bad in [
+            "",
+            "16.21",
+            "data/16.21",
+            "16.21-",
+            "16.21-2026102-abc",
+            "16.21-202610255-abc",
+            "16.21-2026l025-abc",
+            "16.21-+2026102-abc",
+            "16.21-20261325-abc",
+            "16.21-20261000-abc",
+            "16.21-20260230-abc",
+            "16.21-20250229-abc",
+        ] {
+            assert_eq!(version_date(bad), None, "{bad:?}");
+        }
+        // The aramhex fallback has no data path, so it has no date.
+        let st = Stats::of_champions(HashMap::new());
+        assert_eq!(st.data_date(), None);
+        let st = st.with_data_path("data/16.21-20261028-630a0df07f2a");
+        assert_eq!(st.data_date(), Some((2026, 10, 28)));
     }
 
     #[test]

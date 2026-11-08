@@ -1106,6 +1106,25 @@ fn game_date(lang: Lang, date: &str, now: i64, zone: &dyn Fn(i64) -> i64) -> Str
     }
 }
 
+/// The day of the data for the footer. `date` is the (year, month, day) in the version of the
+/// data, `now` is the Unix time in seconds, and `zone` gives the offset of the local zone.
+///
+/// - the local day of now: "Today" ("Bugün")
+/// - the day before: "Yesterday" ("Dün")
+/// - older: "Oct 25" ("25 Eki"), with the year ("Oct 25, 2025") when it is not this year
+///
+/// A date after today (the clock of the PC went back) reads as today.
+fn data_day(lang: Lang, date: (i64, u32, u32), now: i64, zone: &dyn Fn(i64) -> i64) -> String {
+    let (year, month, day) = date;
+    let today = moment(now, zone(now));
+    match today.day_no - history::days_from_civil(year, month, day) {
+        ..=0 => lang.t(Key::DataToday).to_string(),
+        1 => lang.t(Key::DataYesterday).to_string(),
+        _ if year == today.year => lang.fmt(Key::GameDate, &[&day, &lang.month(month)]),
+        _ => lang.fmt(Key::GameDateYear, &[&day, &lang.month(month), &year]),
+    }
+}
+
 /// How many rows "Recent games" lists: `GAMES_FIRST`, or with "Show all" up to `GAMES_MAX`.
 /// Never more than the games there are.
 fn games_listed(total: usize, all: bool) -> usize {
@@ -3611,9 +3630,10 @@ impl App {
             .request_repaint_after(std::time::Duration::from_millis(30));
     }
 
-    /// The footer: the patch of the numbers at the left (the name of the data source is in
-    /// its tooltip), and how many games stand behind them at the right. On the Settings
-    /// page it names the app and its version.
+    /// The footer: the patch of the numbers and the day of the data at the left ("Patch 16.22 ·
+    /// Data: Oct 25"; the name of the data source and the game count are in its tooltip). Data
+    /// without a date (the aramhex fallback) show the patch at the left and how many games stand
+    /// behind them at the right. On the Settings page it names the app and its version.
     fn footer(&self, ui: &mut Ui, v: &View) {
         let lang = self.lang;
         ui.add_space(FOOTER_GAP);
@@ -3635,12 +3655,27 @@ impl App {
                 ORANGE,
             )
         } else if let Some(st) = &v.stats {
-            tip = Some(lang.fmt(Key::FooterSource, &[&st.source, &st.patch]));
-            (
-                lang.fmt(Key::FooterPatch, &[&st.patch]),
-                lang.games(st.matches as u32, &fmt_n(lang, st.matches as u32)),
-                LABEL_2,
-            )
+            let source = lang.fmt(Key::FooterSource, &[&st.source, &st.patch]);
+            let games = lang.games(st.matches as u32, &fmt_n(lang, st.matches as u32));
+            match st.data_date() {
+                // The day of the data takes the place of the game count, which moves to the tooltip.
+                Some(date) => {
+                    let (now, zone) = self.date_clock();
+                    tip = Some(format!("{source} · {games}"));
+                    (
+                        lang.fmt(
+                            Key::FooterPatchData,
+                            &[&st.patch, &data_day(lang, date, now, &*zone)],
+                        ),
+                        String::new(),
+                        LABEL_2,
+                    )
+                }
+                None => {
+                    tip = Some(source);
+                    (lang.fmt(Key::FooterPatch, &[&st.patch]), games, LABEL_2)
+                }
+            }
         } else {
             (lang.t(Key::LoadingData).to_string(), String::new(), LABEL_2)
         };
@@ -14920,7 +14955,8 @@ mod tests {
             let mut app = test_app(Settings::default(), lang);
             let texts = window_texts(&mut app, &v, None);
             assert!(texts.iter().any(|t| t == left), "{lang:?}: {texts:?}");
-            // The name of the source is not on the footer. The match count stays at the right.
+            // The name of the source is not on the footer. Data without a date (the aramhex
+            // fallback) keep the match count at the right.
             assert!(
                 !texts.iter().any(|t| t.contains("aramkit")),
                 "{lang:?}: {texts:?}"
@@ -14951,6 +14987,79 @@ mod tests {
                     FontId::proportional(11.0),
                 );
             assert!(w <= MAIN_W - 2.0 * MARGIN, "{lang:?}: {w:.1}");
+        }
+    }
+
+    #[test]
+    fn the_day_of_the_data_reads_as_today_yesterday_or_a_short_date() {
+        // Now is 01:30 on the 29th of October 2026 in Turkey (UTC+3), and 22:30 on the 28th in UTC.
+        let now = history::parse_iso("2026-10-28T22:30:00Z").unwrap();
+        let turkey = |_: i64| 3 * 3600;
+        let cases = [
+            ((2026, 10, 29), "Today", "Bugün"),
+            ((2026, 10, 28), "Yesterday", "Dün"),
+            ((2026, 10, 25), "Oct 25", "25 Eki"),
+            ((2026, 1, 1), "Jan 1", "1 Oca"),
+            ((2025, 12, 31), "Dec 31, 2025", "31 Ara 2025"),
+            // A date after today (the clock of the PC went back) reads as today.
+            ((2026, 11, 2), "Today", "Bugün"),
+        ];
+        for (date, en, tr) in cases {
+            assert_eq!(data_day(Lang::En, date, now, &turkey), en, "{date:?}");
+            assert_eq!(data_day(Lang::Tr, date, now, &turkey), tr, "{date:?}");
+        }
+        // In UTC the same instant is still the 28th.
+        assert_eq!(data_day(Lang::En, (2026, 10, 28), now, &|_| 0), "Today");
+    }
+
+    #[test]
+    fn the_footer_shows_the_day_of_the_data_in_place_of_the_game_count() {
+        let mut stats = crate::data::Stats::of_champions(Default::default())
+            .with_data_path("data/16.22-20261025-56d26ac2ef6f");
+        stats.patch = "16.22".into();
+        let v = View {
+            phase: Phase::Idle,
+            offer: None,
+            stats: Some(Arc::new(stats)),
+            ..pick_view()
+        };
+        for (lang, left) in [
+            (Lang::En, "Patch 16.22 · Data: Oct 25"),
+            (Lang::Tr, "16.22 yaması · Veri: 25 Eki"),
+        ] {
+            let mut app = test_app(Settings::default(), lang);
+            app.debug_clock = games_clock();
+            let texts = window_texts(&mut app, &v, None);
+            assert!(texts.iter().any(|t| t == left), "{lang:?}: {texts:?}");
+            // The game count is not on the footer any more. It stays in the tooltip.
+            let games = lang.games(120_000, &fmt_n(lang, 120_000));
+            assert!(!texts.contains(&games), "{lang:?}: {texts:?}");
+        }
+        // The data of yesterday and of today read as words.
+        let day = |date| data_day(Lang::Tr, date, games_clock().unwrap().0, &|_| 3 * 3600);
+        assert_eq!(day((2026, 10, 28)), "Dün");
+        assert_eq!(day((2026, 10, 29)), "Bugün");
+    }
+
+    #[test]
+    fn the_footer_with_the_day_of_the_data_fits_beside_the_update_link() {
+        let ctx = egui::Context::default();
+        theme::setup(&ctx);
+        let font = FontId::proportional(11.0);
+        for lang in [Lang::En, Lang::Tr] {
+            // The longest day texts: a word, and a date of another year.
+            let days = [
+                lang.t(Key::DataToday).to_string(),
+                lang.t(Key::DataYesterday).to_string(),
+                lang.fmt(Key::GameDateYear, &[&30, &lang.month(9), &2025]),
+            ];
+            for day in days {
+                let left = lang.fmt(Key::FooterPatchData, &[&"16.22", &day]);
+                let w = text_width(&ctx, &left, font.clone())
+                    + 12.0
+                    + text_width(&ctx, lang.t(Key::UpdateShort), font.clone());
+                assert!(w <= MAIN_W - 2.0 * MARGIN, "{lang:?} {left}: {w:.1}");
+            }
         }
     }
 
