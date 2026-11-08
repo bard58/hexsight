@@ -5,7 +5,7 @@ use crate::data::{LoadError, NoStats};
 use crate::history::{self, Game};
 use crate::i18n::{Key, Lang, LangPref};
 use crate::kit::{self, fmt_n};
-use crate::lcu::{Phase, TradeCall, TradeState};
+use crate::lcu::{Phase, Trade, TradeCall, TradeState};
 use crate::model::*;
 use crate::ocr::{CaptureHealth, Card, ScanRecord};
 use crate::suggest::{self, Advice, GameContext, ItemPick, Reason};
@@ -334,6 +334,15 @@ const TRADE_PAUSE: std::time::Duration = std::time::Duration::from_millis(1500);
 
 /// The height of the buttons of a trade request, in points.
 const TRADE_BUTTON_H: f32 = 28.0;
+
+/// The veil over the icon of a teammate that a click cannot ask now, or that you
+/// asked already (`MateAsk`). The tier badge stays over it, so the tier still reads.
+const MATE_DIM: Color32 = Color32::from_black_alpha(150);
+
+/// The small clock on the icon of a teammate that you asked for a trade: its radius,
+/// and the width of its line, in points.
+const MATE_CLOCK_R: f32 = 7.0;
+const MATE_CLOCK_LINE: f32 = 1.5;
 
 /// After a click on the button "Fix", it stays off for this long, so a second
 /// click cannot send the change again while the client saves it.
@@ -965,6 +974,41 @@ fn paint_corner_badge(p: &egui::Painter, icon: Rect, row: Option<ChampRow>) {
     match row {
         Some(r) => kit::paint_tier(p, badge, Some(r.tier)),
         None => kit::paint_no_stats(p, badge),
+    }
+}
+
+/// A small clock at `center`: a ring and two hands, for a trade that you asked and that
+/// waits for the teammate.
+fn paint_clock(p: &egui::Painter, center: egui::Pos2, ink: Color32) {
+    let line = egui::Stroke::new(MATE_CLOCK_LINE, ink);
+    p.circle_stroke(center, MATE_CLOCK_R, line);
+    p.line_segment([center, center - vec2(0.0, MATE_CLOCK_R * 0.6)], line);
+    p.line_segment([center, center + vec2(MATE_CLOCK_R * 0.45, 0.0)], line);
+}
+
+/// What a click on a teammate of the team strip does, from the state of the trade
+/// with that teammate (`Trade.cell` is `Mate.cell`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MateAsk {
+    /// Ask for the trade with this id (state Available).
+    Ask(i64),
+    /// You asked already: a click takes the request with this id back (state Sent).
+    Asked(i64),
+    /// The teammate asked you. The request card has the buttons for that, so a click
+    /// here does nothing.
+    Theirs,
+    /// Nothing: the teammate is in another trade, no trade is possible, or the session
+    /// has no trade with the teammate.
+    Off,
+}
+
+/// The `MateAsk` of the teammate in `cell`.
+fn mate_ask(trades: &[Trade], cell: i64) -> MateAsk {
+    match trades.iter().find(|t| t.cell == cell) {
+        Some(t) if t.state == TradeState::Available => MateAsk::Ask(t.id),
+        Some(t) if t.state == TradeState::Sent => MateAsk::Asked(t.id),
+        Some(t) if t.state == TradeState::Received => MateAsk::Theirs,
+        _ => MateAsk::Off,
     }
 }
 
@@ -3794,6 +3838,7 @@ impl App {
                 self.champion_row(ui, v);
                 self.trade_requests(ui, v);
                 self.bench_card(ui, v);
+                self.team_card(ui, v);
                 self.spells_card(ui, v);
                 // The note at the right of the header says that the sets are in the shop.
                 let shop = (v.mine.is_some() && v.item_sets_for == v.mine)
@@ -4243,6 +4288,119 @@ impl App {
             lang.t(Key::BenchClickToSwap)
         ))
         .clicked()
+    }
+
+    /// The champions of your teammates in a row of icons, as on the bench grid, each with
+    /// the tier badge. A click on a teammate that you can ask (`MateAsk::Ask`) asks for a
+    /// trade, and a click on one that you asked already takes the request back. A request
+    /// that you asked shows dim with a small clock. A teammate that a click cannot ask now
+    /// shows dim and takes no click. Only the click of the player sends a call, and after a
+    /// click the icon rests for `TRADE_PAUSE`, as the buttons of the request card do.
+    fn team_card(&mut self, ui: &mut Ui, v: &View) {
+        let lang = self.lang;
+        let (Some(sd), Some(cs)) = (&v.sd, &v.cs) else {
+            return;
+        };
+        let mates: Vec<_> = cs
+            .team
+            .iter()
+            .filter(|m| sd.champions.contains_key(&m.champion))
+            .copied()
+            .collect();
+        if mates.is_empty() {
+            return;
+        }
+        let row_of = |id: i64| v.stats.as_ref().and_then(|s| s.champions.get(&id)).copied();
+        kit::section(ui, &lang.upper(lang.t(Key::SecTeam)));
+        let mut asked = None;
+        kit::group(ui, |ui| {
+            let width = ui.available_width();
+            let grid = bench_grid(width, mates.len());
+            let (area, _) = ui.allocate_exact_size(
+                vec2(width, grid.last().map_or(0.0, |r| r.bottom())),
+                Sense::hover(),
+            );
+            for (mate, at) in mates.iter().zip(&grid) {
+                let rect = at.translate(area.min.to_vec2());
+                let ask = mate_ask(&cs.trades, mate.cell);
+                let resting = |id: i64| {
+                    self.trade_clicked
+                        .is_some_and(|(c, at)| c == id && at.elapsed() < TRADE_PAUSE)
+                };
+                let call = match ask {
+                    MateAsk::Ask(id) if !resting(id) => Some((id, TradeCall::Request)),
+                    MateAsk::Asked(id) if !resting(id) => Some((id, TradeCall::Cancel)),
+                    _ => None,
+                };
+                let c = &sd.champions[&mate.champion];
+                let resp = ui.interact(
+                    bench_hit(rect),
+                    ui.scope_id().with(("mate", mate.cell)),
+                    if call.is_some() {
+                        Sense::click()
+                    } else {
+                        Sense::hover()
+                    },
+                );
+                let hover =
+                    ui.ctx()
+                        .animate_bool_with_time(resp.id, call.is_some() && resp.hovered(), 0.1);
+                self.paint_icon(ui, &c.icon, rect, RADIUS);
+                let p = ui.painter();
+                // Dim: asked already, no trade now, or a click on its way. The teammate
+                // who asked you stays bright, as the request card above names them.
+                let dim = match ask {
+                    MateAsk::Ask(_) => call.is_none(),
+                    MateAsk::Theirs => false,
+                    MateAsk::Asked(_) | MateAsk::Off => true,
+                };
+                if dim {
+                    p.rect_filled(rect, CornerRadius::same(RADIUS), MATE_DIM);
+                }
+                if matches!(ask, MateAsk::Asked(_)) {
+                    paint_clock(p, rect.center(), LABEL);
+                }
+                if hover > 0.0 {
+                    let edge =
+                        egui::Stroke::new(1.5, Color32::from_white_alpha((90.0 * hover) as u8));
+                    p.rect_stroke(
+                        rect,
+                        CornerRadius::same(RADIUS),
+                        edge,
+                        egui::StrokeKind::Inside,
+                    );
+                }
+                paint_corner_badge(p, rect, row_of(mate.champion));
+                if call.is_some() && resp.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                let games = row_of(mate.champion).map_or_else(
+                    || lang.t(Key::NoData).to_string(),
+                    |r| lang.games(r.games, &fmt_n(lang, r.games)),
+                );
+                let hint = match ask {
+                    MateAsk::Ask(_) => Key::TeamAskTrade,
+                    MateAsk::Asked(_) => Key::TeamAsked,
+                    MateAsk::Theirs => Key::TradeWants,
+                    MateAsk::Off => Key::TeamNoTrade,
+                };
+                if resp
+                    .on_hover_text(format!(
+                        "{}
+{games}
+{}",
+                        c.name,
+                        lang.t(hint)
+                    ))
+                    .clicked()
+                {
+                    asked = call;
+                }
+            }
+        });
+        if let Some((id, call)) = asked {
+            self.trade(ui.ctx(), id, call);
+        }
     }
 
     /// Champ select: the summoner spell pair that players take most with your
@@ -10747,6 +10905,186 @@ mod tests {
                 "{lang:?}: {icons:?}"
             );
             out.drop_without_applying_deltas();
+        }
+    }
+
+    /// The bench view with four teammates: Lux (cell 1) can be asked (trade 201), Jinx
+    /// (cell 2) is asked already (202), Sion (cell 3) is in another trade (203), and Galio
+    /// (cell 4) has no trade entry. `last` is the state of the trade with Sion.
+    fn team_view(last: TradeState) -> View {
+        use crate::lcu::Mate;
+        let mut v = bench_view();
+        let cs = v.cs.as_mut().unwrap();
+        cs.team = [(1, 2), (2, 3), (3, 4), (4, 5)]
+            .into_iter()
+            .map(|(cell, champion)| Mate { cell, champion })
+            .collect();
+        cs.trades = [
+            (201, 1, TradeState::Available),
+            (202, 2, TradeState::Sent),
+            (203, 3, last),
+        ]
+        .into_iter()
+        .map(|(id, cell, state)| Trade { id, cell, state })
+        .collect();
+        v
+    }
+
+    #[test]
+    fn a_teammate_takes_the_click_only_when_a_trade_call_fits_its_state() {
+        let t = |id, cell, state| Trade { id, cell, state };
+        let trades = [
+            t(1, 1, TradeState::Available),
+            t(2, 2, TradeState::Sent),
+            t(3, 3, TradeState::Busy),
+            t(4, 4, TradeState::Invalid),
+            t(5, 5, TradeState::Received),
+        ];
+        assert_eq!(mate_ask(&trades, 1), MateAsk::Ask(1));
+        assert_eq!(mate_ask(&trades, 2), MateAsk::Asked(2));
+        assert_eq!(mate_ask(&trades, 3), MateAsk::Off);
+        assert_eq!(mate_ask(&trades, 4), MateAsk::Off);
+        assert_eq!(mate_ask(&trades, 5), MateAsk::Theirs);
+        // A teammate without a trade entry.
+        assert_eq!(mate_ask(&trades, 6), MateAsk::Off);
+    }
+
+    #[test]
+    fn the_team_strip_asks_for_a_trade_or_cancels_it_only_on_a_click() {
+        for last in [TradeState::Busy, TradeState::Invalid] {
+            let v = team_view(last);
+            let (mut app, sent) = test_app_rx(Settings::default(), Lang::En);
+            let ctx = egui::Context::default();
+            theme::setup(&ctx);
+            let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(MAIN_W - 2.0 * MARGIN, 600.0));
+            let mut n = 0;
+            let mut frame = |events: Vec<egui::Event>| {
+                n += 1;
+                let input = egui::RawInput {
+                    time: Some(n as f64 / 10.0),
+                    screen_rect: Some(screen),
+                    events,
+                    ..Default::default()
+                };
+                let out = ctx.run_ui(input, |ui| app.team_card(ui, &v));
+                let icons = rects_where(&out.shapes, |r| {
+                    r.fill == SURFACE_2 && (r.rect.width() - BENCH_ICON).abs() < 0.01
+                });
+                out.drop_without_applying_deltas();
+                icons
+            };
+            let icons = frame(vec![]);
+            assert_eq!(icons.len(), 4, "{last:?}: {icons:?}");
+            let mut click = |at: egui::Pos2| {
+                frame(vec![egui::Event::PointerMoved(at)]);
+                for pressed in [true, false] {
+                    frame(vec![egui::Event::PointerButton {
+                        pos: at,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    }]);
+                }
+                frame(vec![]);
+            };
+            // Sion (in another trade, or no trade possible) and Galio (no trade entry): nothing.
+            click(icons[2].center());
+            click(icons[3].center());
+            assert!(
+                sent.try_recv().is_err(),
+                "{last:?}: a dim teammate sent a call"
+            );
+            // Lux can be asked: one request for trade 201.
+            click(icons[0].center());
+            assert!(matches!(
+                sent.try_recv(),
+                Ok(Cmd::Trade(201, TradeCall::Request))
+            ));
+            assert!(sent.try_recv().is_err());
+            // A second click while the call is on its way sends nothing.
+            click(icons[0].center());
+            assert!(sent.try_recv().is_err(), "{last:?}: a second request");
+            // Jinx is asked already: a click takes the request back.
+            click(icons[1].center());
+            assert!(matches!(
+                sent.try_recv(),
+                Ok(Cmd::Trade(202, TradeCall::Cancel))
+            ));
+            assert!(sent.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn the_team_strip_shows_tiers_and_an_asked_teammate_dim_with_a_clock() {
+        let v = team_view(TradeState::Busy);
+        for lang in [Lang::En, Lang::Tr] {
+            let mut app = test_app(Settings::default(), lang);
+            let ctx = egui::Context::default();
+            theme::setup(&ctx);
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    pos2(0.0, 0.0),
+                    vec2(MAIN_W - 2.0 * MARGIN, 600.0),
+                )),
+                ..Default::default()
+            };
+            let out = ctx.run_ui(input, |ui| app.team_card(ui, &v));
+            let texts = painted_text(&out.shapes);
+            assert!(
+                texts.iter().any(|t| *t == lang.upper(lang.t(Key::SecTeam))),
+                "{lang:?}: {texts:?}"
+            );
+            // The tier badges of Lux (S), Jinx and Sion (A), and Galio (B), as on the bench grid.
+            for tier in ["S", "A", "B"] {
+                assert!(
+                    texts.iter().any(|t| t == tier),
+                    "{lang:?} {tier}: {texts:?}"
+                );
+            }
+            let icons = rects_where(&out.shapes, |r| {
+                r.fill == SURFACE_2 && (r.rect.width() - BENCH_ICON).abs() < 0.01
+            });
+            assert_eq!(icons.len(), 4, "{lang:?}");
+            assert!(icons.iter().all(|r| r.top() == icons[0].top()), "one row");
+            // Lux, who can be asked, is bright. Jinx (asked), Sion (busy) and Galio (no trade) are dim.
+            let dim = rects_where(&out.shapes, |r| r.fill == MATE_DIM);
+            assert_eq!(dim, icons[1..].to_vec(), "{lang:?}");
+            // The clock sits only on Jinx.
+            let clocks = circles_where(&out.shapes, |c| {
+                c.radius == MATE_CLOCK_R && c.stroke.width == MATE_CLOCK_LINE
+            });
+            assert_eq!(clocks.len(), 1, "{lang:?}: {clocks:?}");
+            assert!((clocks[0].center - icons[1].center()).length() < 0.01);
+            out.drop_without_applying_deltas();
+        }
+        // Without teammates there is no strip.
+        let mut empty = team_view(TradeState::Busy);
+        empty.cs.as_mut().unwrap().team.clear();
+        let mut app = test_app(Settings::default(), Lang::En);
+        let ctx = egui::Context::default();
+        theme::setup(&ctx);
+        let out = ctx.run_ui(egui::RawInput::default(), |ui| app.team_card(ui, &empty));
+        assert!(painted_text(&out.shapes).is_empty());
+        out.drop_without_applying_deltas();
+    }
+
+    #[test]
+    fn the_team_strip_texts_fit_in_both_languages() {
+        let ctx = egui::Context::default();
+        theme::setup(&ctx);
+        for lang in [Lang::En, Lang::Tr] {
+            // The header of the section, in capital letters, is one line over the card.
+            let head = text_width(
+                &ctx,
+                &lang.upper(lang.t(Key::SecTeam)),
+                FontId::new(11.0, semibold()),
+            );
+            assert!(head <= CARD_INNER, "{lang:?}: {head:.1}");
+            // The last line of a tooltip stays one line, no wider than the card.
+            for key in [Key::TeamAskTrade, Key::TeamAsked, Key::TeamNoTrade] {
+                let w = text_width(&ctx, lang.t(key), FontId::proportional(13.5));
+                assert!(w <= CARD_INNER, "{lang:?} {key:?}: {w:.1} of {CARD_INNER}");
+            }
         }
     }
 
