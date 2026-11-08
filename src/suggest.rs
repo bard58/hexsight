@@ -1549,19 +1549,21 @@ mod tests {
     fn the_first_core_item_you_do_not_own_comes_first_with_its_number() {
         let (sd, d) = (sd(), heimer());
         let a = advise(&input_of(&[], &d, &sd));
-        // Heimerdinger, style "ap": the core is Blackfire Torch, Liandry's Torment, Rabadon's Deathcap.
+        // Heimerdinger, style "ap": the core is Blackfire Torch, Liandry's Torment, Rylai's Crystal Scepter.
         assert_eq!(a.style, "ap");
-        assert_eq!(ids(&a), vec![2503, 6653, 3089]);
+        assert_eq!(ids(&a), vec![2503, 6653, 3116]);
         let reasons: Vec<Reason> = a.items.iter().map(|p| p.reason).collect();
         assert_eq!(
             reasons,
             vec![Reason::Core(1), Reason::Core(2), Reason::Core(3)]
         );
-        // With the first item bought, the second comes first, and the third place goes to the next item.
+        // With the first item bought, the second comes first. The build buys boots, so a pair comes
+        // in after the first finished item (the cheaper of the top two pairs), before the last core item.
         let a = advise(&input_of(&[2503], &d, &sd));
-        assert_eq!(ids(&a), vec![6653, 3089, 4645]);
+        assert_eq!(ids(&a), vec![6653, 3008, 3116]);
         assert_eq!(a.items[0].reason, Reason::Core(2));
-        assert_eq!(a.items[2].reason, Reason::Later);
+        assert_eq!(a.items[1].reason, Reason::Boots);
+        assert_eq!(a.items[2].reason, Reason::Core(3));
         assert!(!a.slots_full && !a.no_build);
     }
 
@@ -1684,9 +1686,11 @@ mod tests {
     #[test]
     fn a_build_without_boots_gives_none_and_owned_boots_drop_all() {
         let sd = sd();
-        // The Heimerdinger build skips boots, so the build adds none (the slot list can still name a pair).
-        let d = heimer();
-        assert!(d.builds[0].boots_skipped);
+        // A build that skips boots adds none (the slot list can still name a pair). Most players
+        // of the real Heimerdinger build buy boots, so the test says that they skip them.
+        let mut d = heimer();
+        assert!(!d.builds[0].boots_skipped);
+        d.builds[0].boots_skipped = true;
         let a = advise(&input_of(&[2503], &d, &sd));
         assert!(a.items.iter().all(|p| p.reason != Reason::Boots));
         // With boots in the build and a pair in your items, no pair is suggested.
@@ -1799,8 +1803,8 @@ mod tests {
         let one = ctx(Some(50), 1, 0);
         i.ctx = Some(&one);
         assert!(score_of(&rank(&i), 3165).is_none());
-        assert_eq!(ids(&advise(&i)), vec![2503, 6653, 3089]);
-        // The real build already lists Morellonomicon, far down. It gets the 30 points and no second entry.
+        assert_eq!(ids(&advise(&i)), vec![2503, 6653, 3116]);
+        // The real build already lists Morellonomicon, fourth. It gets the 30 points and no second entry.
         let real = heimer();
         let mut i = input_of(&[], &real, &sd);
         i.ctx = Some(&two);
@@ -1808,7 +1812,7 @@ mod tests {
         assert_eq!(r.scored.iter().filter(|s| s.id == 3165).count(), 1);
         assert_eq!(
             score_of(&r, 3165),
-            Some(LATER_BASE - 6 * LATER_STEP + ANTI_HEAL_BONUS)
+            Some(LATER_BASE - 3 * LATER_STEP + ANTI_HEAL_BONUS)
         );
         // An attack damage champion gets the attack damage list, and a tank build the armor list.
         let mut ad = with_build("ad", &[3031, 3071, 3036], &[]);
@@ -1967,7 +1971,7 @@ mod tests {
             }
         );
         // An offered augment alone does not lift it into the three: the core items score higher.
-        assert_eq!(ids(&advise(&i)), vec![2503, 6653, 3089]);
+        assert_eq!(ids(&advise(&i)), vec![2503, 6653, 3116]);
         // A known augment: 60 + 35 points. The item comes second, and the reason says that you took it.
         let mut k = input_of(&[], &d, &sd);
         k.known = &[3150];
@@ -2064,10 +2068,11 @@ mod tests {
         i.gold = Some(price);
         let a = advise(&i);
         assert!(a.has_gold);
-        // Blackfire Torch is ready with exactly its price. The next items are not.
+        // Blackfire Torch is ready with exactly its price. Liandry's Torment costs more and is not.
+        // Rylai's Crystal Scepter costs less, so it is ready too.
         assert_eq!(
             a.items.iter().map(|p| p.ready).collect::<Vec<_>>(),
-            vec![true, false, false]
+            vec![true, false, true]
         );
         assert_eq!(a.items[0].need, price);
         // One gold less: not ready.

@@ -585,7 +585,7 @@ mod tests {
                 "Start · Skills: Q > W > E",
                 "Start (other option)",
                 "Core build (in order)",
-                "Boots: most players skip them",
+                "Boots",
                 "Later items",
                 "Situational",
                 "Consumables"
@@ -595,19 +595,20 @@ mod tests {
         assert_eq!(block_ids(v, 0), ["3802"]);
         assert_eq!(block_ids(v, 1), ["2031", "3802"]);
         // The core in buying order. Item 0 ("no boots") is no item of the set.
-        assert_eq!(block_ids(v, 2), ["2503", "6653", "3089"]);
+        // The core of the most played profile, in the order of its most played route.
+        assert_eq!(block_ids(v, 2), ["2503", "6653", "3116"]);
         assert_eq!(block_ids(v, 3), ["3020", "3008", "3158"]);
         assert_eq!(block_ids(v, 4).len(), 6);
-        assert_eq!(block_ids(v, 4)[..3], ["4645", "3135", "3157"]);
-        // The situational items: the other profiles' core items (4645, 3116, 3157, 3118) all sit in
-        // the later block already, so the block takes the later items that did not fit there.
+        assert_eq!(block_ids(v, 4)[..3], ["3089", "3157", "4645"]);
+        // The situational items: of the other profiles' core items (4645, 3118, 3089, 3157), only
+        // Malignance is not in the later block. The later items that did not fit come after it.
         let shown: Vec<String> = [block_ids(v, 2), block_ids(v, 4)].concat();
         assert!(
             block_ids(v, 5).iter().all(|id| !shown.contains(id)),
             "{:?}",
             block_ids(v, 5)
         );
-        assert_eq!(block_ids(v, 5)[0], "3165");
+        assert_eq!(block_ids(v, 5)[0], "3118");
         // The consumables of the top three starting sets: the refillable potion. The two health
         // potions sit in the fourth set, which is too far down.
         assert_eq!(block_ids(v, 6), ["2031"]);
@@ -670,7 +671,7 @@ mod tests {
                 "Başlangıç · Yetenek sırası: Q > W > E",
                 "Başlangıç (diğer seçenek)",
                 "Çekirdek dizilim (sırayla)",
-                "Bot: çoğu oyuncu almıyor",
+                "Botlar",
                 "Sonradan alınanlar",
                 "Duruma göre",
                 "Tüketilebilir eşyalar"
@@ -686,7 +687,9 @@ mod tests {
     fn the_boots_title_says_so_when_most_players_buy_none() {
         let (sd, cs) = heimer_data(&[]);
         let mut b = cs.builds[0].clone();
-        assert!(b.boots_skipped);
+        // Most players of the real build buy boots (no boots: 46%). Say that they skip them.
+        assert!(!b.boots_skipped);
+        b.boots_skipped = true;
         assert_eq!(
             block_titles(&set_json(Lang::En, 74, 0, &b, &sd, false))[3],
             "Boots: most players skip them"
@@ -710,14 +713,13 @@ mod tests {
             block_titles(&set_json(Lang::Tr, 74, 0, &b, &sd, false))[3],
             "Botlar"
         );
-        // The parser reads the same from the file: put real boots first and "none" second.
+        // The parser reads the same from the file: give "none" (the third row of the most
+        // played route) more than half the players.
         let mut d: serde_json::Value = serde_json::from_str(HEIMER).unwrap();
-        d["builds"]["filtered"]["archetypes"][0]["profiles"][0]["routes"][0]["boots"]
-            .as_array_mut()
-            .unwrap()
-            .swap(0, 1);
+        d["builds"]["filtered"]["archetypes"][0]["profiles"][2]["routes"][1]["boots"][2]["pickRate"] =
+            serde_json::json!(0.6);
         let again = crate::data::kit_champion(&d).builds.remove(0);
-        assert!(!again.boots_skipped);
+        assert!(again.boots_skipped);
         assert_eq!(&again.boots[..3], [3020, 3008, 3158]);
         // No boots data at all: no block, no claim.
         b.boots.clear();
@@ -730,8 +732,8 @@ mod tests {
 
     #[test]
     fn an_id_that_the_item_list_does_not_know_is_dropped() {
-        // 3089 (core), 3020 (boots) and 3802 (start) are not in the list. Nor is 2003 (a potion).
-        let (sd, cs) = heimer_data(&[3089, 3020, 3802, 2003]);
+        // 3116 (core), 3020 (boots) and 3802 (start) are not in the list. Nor is 2003 (a potion).
+        let (sd, cs) = heimer_data(&[3116, 3020, 3802, 2003]);
         let v = &sets(Lang::En, 74, &cs, &sd, false)[0].1;
         let titles = block_titles(v);
         // The start block lost its only item, so it is gone. The second start keeps the potion.
@@ -742,7 +744,7 @@ mod tests {
             let ids = block_ids(v, i);
             assert!(
                 !ids.iter()
-                    .any(|id| ["3089", "3020", "3802", "2003"].contains(&id.as_str())),
+                    .any(|id| ["3116", "3020", "3802", "2003"].contains(&id.as_str())),
                 "block {i}: {ids:?}"
             );
         }
