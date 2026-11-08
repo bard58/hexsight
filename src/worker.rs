@@ -15,7 +15,7 @@ use crate::model::{ChampStats, StaticData, is_mayhem};
 use crate::ocr::{
     self, CaptureHealth, CaptureWatch, Card, Desk, Geometry, Line, Matcher, Ocr, ScanRecord,
 };
-use crate::suggest::{self, Advice, Roster};
+use crate::suggest::{self, Advice, MyStats, Roster};
 use crate::{cache, update, win};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
@@ -128,6 +128,8 @@ pub struct Live {
     pub level: i64,
     /// Your gold (`currentGold` of the Live Client). `None` when the answer lacks it.
     pub gold: Option<u32>,
+    /// Your own armor, magic resist and health (`championStats` of the same answer).
+    pub stats: Option<MyStats>,
 }
 
 impl Live {
@@ -237,6 +239,11 @@ pub struct Shared {
     pub roster: Option<Roster>,
     /// The suggestions for the window. The poll thread stores it only when it changes.
     pub advice: Option<Arc<Advice>>,
+    /// The enemy champions of this game whose stats were asked for (`enemy_prefetch`), so each
+    /// goes to the fetch thread once. Their data gives the damage split of the summary.
+    pub prefetched: HashSet<i64>,
+    /// Your deaths and who killed you in this game, from the rosters (the death recap).
+    pub recap: suggest::recap::Tracker,
     /// Language tag of the OCR engine, for example "en-US". `None` until it starts.
     pub ocr_language: Option<String>,
     /// The League game window exists. `None` outside a game.
@@ -408,6 +415,8 @@ impl Shared {
     fn end_game(&mut self) {
         self.roster = None;
         self.advice = None;
+        self.prefetched.clear();
+        self.recap = suggest::recap::Tracker::default();
         self.offer = None;
         self.picks_done = 0;
         self.picks_guessed = false;
@@ -925,8 +934,10 @@ fn poll_loop(
                 }
             }
             // The first read of a game or a new read of the player list. A pass that reads none keeps the last one.
+            // Each new roster feeds the death recap, and asks once for the stats of each enemy
+            // champion (their damage split). The own champion still loads first.
             if let Some(r) = new_roster {
-                s.roster = Some(r);
+                store_roster(&mut s, &want, r);
             }
             match live_state {
                 Some(l) => {
@@ -1241,6 +1252,7 @@ fn read_live(
     let state = Some(Live {
         level: me["level"].as_i64().unwrap_or(0),
         gold,
+        stats: suggest::stats::parse_my_stats(&me),
     });
     let due = roster_due(ask.on, ask.since_last, ask.gold_before, gold, ask.fast);
     let Some(sd) = sd.filter(|_| want_champ || due) else {
@@ -1282,6 +1294,67 @@ fn read_live(
     }
 }
 
+/// The enemy champions of a new roster whose stats are not asked for yet (`sent`): each known
+/// champion once, no ally, and at most 5 in a game. The poll thread sends them to the fetch thread
+/// and adds them to `sent`.
+pub(crate) fn enemy_prefetch(roster: &Roster, sent: &HashSet<i64>) -> Vec<i64> {
+    let mut out: Vec<i64> = Vec::new();
+    for e in roster.enemies() {
+        if e.champion > 0 && !sent.contains(&e.champion) && !out.contains(&e.champion) {
+            out.push(e.champion);
+        }
+    }
+    out.truncate(MAX_PREFETCH.saturating_sub(sent.len()));
+    out
+}
+
+/// Keep a new roster of the game: it feeds the death recap, and the enemy champions that were not
+/// asked for yet go to the fetch thread (`want`), once each.
+fn store_roster(s: &mut Shared, want: &Sender<i64>, r: Roster) {
+    s.recap.observe(&r, Instant::now());
+    let ids = enemy_prefetch(&r, &s.prefetched);
+    for &id in &ids {
+        let _ = want.send(id);
+    }
+    s.prefetched.extend(ids);
+    s.roster = Some(r);
+}
+
+/// At most this many enemy champions are prefetched in one game.
+const MAX_PREFETCH: usize = 5;
+
+/// The magic share of the damage of each enemy champion, from its own data (fresh or old
+/// details). An enemy without data, or without a share in it, is left out: the summary then uses
+/// its role.
+fn enemy_shares(s: &Shared, roster: &Roster) -> HashMap<i64, f32> {
+    roster
+        .enemies()
+        .filter_map(|e| {
+            let d = s
+                .details
+                .get(&e.champion)
+                .or(s.old_details.get(&e.champion))?;
+            Some((e.champion, d.magic_share?))
+        })
+        .collect()
+}
+
+/// What the last advice gives the next pass, for the hysteresis of the rules and the path.
+struct Prev {
+    path: Option<u16>,
+    fed: Option<i64>,
+    rules: Option<suggest::RuleState>,
+}
+
+/// The path, the fed enemy and the team rules of the last advice. All `None` without one.
+fn prev_of(last: Option<&Advice>) -> Prev {
+    Prev {
+        path: last.and_then(|a| a.path),
+        fed: last.and_then(|a| a.fed_rule),
+        rules: last.map(|a| a.rules),
+    }
+}
+
 /// One pass of the suggestions: from the roster of the game, the own champion and the offers so
 /// far, make the advice, and store it when it changed. Outside a Mayhem game, or with every setting
 /// off, the advice is cleared. The work runs outside the lock. The summary of the enemy team needs
@@ -1300,21 +1373,30 @@ fn suggest_pass(shared: &Mutex<Shared>, ctx: &egui::Context, phase: Phase, queue
             s.static_data.clone(),
             s.roster.clone(),
         ) {
-            (true, Some(sd), Some(roster)) if details.is_some() || stats_gone => Some((
-                sd,
-                details,
-                roster,
-                s.live.gold,
-                s.offered
-                    .iter()
-                    .flat_map(|o| o.1.iter().copied())
-                    .collect::<Vec<i64>>(),
-            )),
+            (true, Some(sd), Some(roster)) if details.is_some() || stats_gone => {
+                let prev = prev_of(s.advice.as_deref());
+                Some((
+                    sd,
+                    details,
+                    enemy_shares(&s, &roster),
+                    roster,
+                    s.live.gold,
+                    s.live.stats,
+                    s.offered
+                        .iter()
+                        .flat_map(|o| o.1.iter().copied())
+                        .collect::<Vec<i64>>(),
+                    s.recap.killer(),
+                    s.recap.recap().cloned(),
+                    prev,
+                ))
+            }
             _ => None,
         }
     };
-    let advice = work.map(|(sd, details, roster, gold, offered)| {
-        let summary = suggest::context(&roster, &sd, &HashMap::new());
+    let advice = work.map(|work| {
+        let (sd, details, shares, roster, gold, stats, offered, killer, recap, prev) = work;
+        let summary = suggest::context(&roster, &sd, &shares);
         let no_stats = ChampStats::default();
         // The Live Client does not give the augments that the player took, so none is known.
         let input = suggest::Input {
@@ -1325,12 +1407,12 @@ fn suggest_pass(shared: &Mutex<Shared>, ctx: &egui::Context, phase: Phase, queue
             sd: &sd,
             offered: &offered,
             known: &[],
-            stats: None,
-            killer: None,
-            recap: None,
-            prev_path: None,
-            prev_fed: None,
-            prev_rules: None,
+            stats,
+            killer,
+            recap: recap.as_ref(),
+            prev_path: prev.path,
+            prev_fed: prev.fed,
+            prev_rules: prev.rules,
         };
         suggest::advise(&input)
     });
@@ -2207,6 +2289,7 @@ fn key_loop(shared: Arc<Mutex<Shared>>, ctx: egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::suggest::testkit;
 
     #[test]
     fn picks_due_follows_level() {
@@ -3275,11 +3358,198 @@ WindowMode=2
         s.live = Live {
             level: 9,
             gold: Some(1200),
+            stats: Some(MyStats::default()),
         };
+        s.prefetched.insert(51);
         s.end_game();
         assert!(s.roster.is_none() && s.advice.is_none());
-        // The gold goes with the level.
-        assert_eq!((s.live.level, s.live.gold), (0, None));
+        // The gold and the own stats go with the level.
+        assert_eq!((s.live.level, s.live.gold, s.live.stats), (0, None, None));
+        // The prefetched enemies go too, so the next game asks for its own.
+        assert!(s.prefetched.is_empty());
+    }
+
+    // ---- v0.1.3: the enemy prefetch, the shares, the own stats and the death recap.
+
+    #[test]
+    fn enemy_prefetch_sends_each_enemy_once_and_no_ally() {
+        let mut r = testkit::roster(vec![
+            testkit::enemy(51, &[]),
+            testkit::enemy(32, &[]),
+            testkit::enemy(0, &[]),
+            testkit::enemy(51, &[]),
+        ]);
+        // An ally is never sent.
+        r.players.push(suggest::Player {
+            champion: 7,
+            ..testkit::me(&[])
+        });
+        let mut sent = HashSet::new();
+        let first = enemy_prefetch(&r, &sent);
+        assert_eq!(first, vec![51, 32]);
+        sent.extend(first);
+        // A second roster sends none.
+        assert!(enemy_prefetch(&r, &sent).is_empty());
+        // At most 5 in a game.
+        let many = testkit::roster((1..=8).map(|c| testkit::enemy(c, &[])).collect());
+        let ids = enemy_prefetch(&many, &HashSet::new());
+        assert_eq!(ids, vec![1, 2, 3, 4, 5]);
+        assert_eq!(enemy_prefetch(&many, &sent).len(), 3);
+        // Without a known side there are no enemies.
+        let mut blind = many.clone();
+        blind.players[0].side = suggest::Side::Unknown;
+        assert!(enemy_prefetch(&blind, &HashSet::new()).is_empty());
+    }
+
+    #[test]
+    fn a_new_roster_asks_for_the_enemies_once_and_end_game_clears_them() {
+        let (want, rx) = channel();
+        let mut s = with_stats(Some(74));
+        let r = testkit::roster(vec![testkit::enemy(51, &[]), testkit::enemy(32, &[])]);
+        store_roster(&mut s, &want, r.clone());
+        store_roster(&mut s, &want, r.clone());
+        assert_eq!(rx.try_iter().collect::<Vec<_>>(), vec![51, 32]);
+        assert_eq!(s.roster.as_ref(), Some(&r));
+        s.end_game();
+        store_roster(&mut s, &want, r);
+        assert_eq!(rx.try_iter().collect::<Vec<_>>(), vec![51, 32]);
+    }
+
+    #[test]
+    fn the_own_champion_loads_before_the_enemies() {
+        let mut s = with_stats(Some(74));
+        let mut queue: VecDeque<i64> = [51, 32].into();
+        assert_eq!(s.next_fetch(&mut queue), Some(74));
+        s.details.insert(74, Arc::new(ChampStats::default()));
+        assert_eq!(s.next_fetch(&mut queue), Some(51));
+        // A failed enemy load shows no note: the window asks `no_stats` for the own champion only.
+        s.failed.insert(51, (Instant::now(), NoStats::Transient));
+        assert_eq!(s.no_stats(74), None);
+        // A failed enemy load does not stop the suggestions either.
+        assert!(!s.my_champion.is_some_and(|c| s.failed.contains_key(&c)));
+    }
+
+    #[test]
+    fn the_shares_come_from_the_enemy_data_and_lift_kayle_to_ap() {
+        let sd = testkit::sd();
+        let mut s = Shared::default();
+        let r = testkit::roster(vec![testkit::enemy(1010, &[]), testkit::enemy(51, &[])]);
+        assert!(enemy_shares(&s, &r).is_empty());
+        let kayle = ChampStats {
+            magic_share: Some(0.7),
+            ..Default::default()
+        };
+        s.old_details.insert(1010, Arc::new(kayle));
+        // Caitlyn has data without a share: she keeps her role.
+        s.details.insert(51, Arc::new(ChampStats::default()));
+        // My own champion is no enemy.
+        s.details.insert(
+            74,
+            Arc::new(ChampStats {
+                magic_share: Some(1.0),
+                ..Default::default()
+            }),
+        );
+        assert_eq!(enemy_shares(&s, &r), HashMap::from([(1010, 0.7)]));
+        // Kayle, Akali, Katarina, Evelynn and Caitlyn. By role (marksman, assassins) the team reads
+        // as AD; by their own data (Kayle 70 % magic damage) it reads as AP.
+        let team = testkit::roster(
+            [1010, 84, 55, 28, 51]
+                .iter()
+                .map(|&c| testkit::enemy(c, &[]))
+                .collect(),
+        );
+        for (c, m) in [(84, 0.8), (55, 0.85), (28, 0.85)] {
+            s.details.insert(
+                c,
+                Arc::new(ChampStats {
+                    magic_share: Some(m),
+                    ..Default::default()
+                }),
+            );
+        }
+        let today = suggest::context(&team, &sd, &HashMap::new());
+        let now = suggest::context(&team, &sd, &enemy_shares(&s, &team));
+        assert!(today.ap_pct.is_some_and(|p| p < 50), "{:?}", today.ap_pct);
+        assert!(now.ap_pct.is_some_and(|p| p >= 60), "{:?}", now.ap_pct);
+        // Kayle by her data alone moves the share up.
+        let kayle_only = HashMap::from([(1010, 0.7)]);
+        let lifted = suggest::context(&team, &sd, &kayle_only);
+        assert!(lifted.ap_pct > today.ap_pct);
+        // An empty map is exactly the summary of today.
+        assert_eq!(
+            suggest::context(&r, &sd, &HashMap::new()),
+            testkit::context_of(&r, &sd)
+        );
+    }
+
+    /// A shared state in a Mayhem game that is ready for a pass, with the Heimerdinger fixture.
+    fn ready_for_a_pass(r: Roster) -> Mutex<Shared> {
+        let mut s = with_stats(Some(74));
+        s.suggest_on = true;
+        s.static_data = Some(Arc::new(testkit::sd()));
+        s.details.insert(74, Arc::new(testkit::heimer()));
+        s.roster = Some(r);
+        Mutex::new(s)
+    }
+
+    #[test]
+    fn the_pass_wires_the_own_stats_and_the_recap() {
+        let ctx = egui::Context::default();
+        let alive = testkit::roster(vec![testkit::enemy(51, &[]), testkit::enemy(32, &[])]);
+        let shared = ready_for_a_pass(alive.clone());
+        shared.lock().unwrap().live.stats = Some(MyStats {
+            armor: Some(171.6),
+            mr: Some(48.2),
+            max_health: None,
+        });
+        suggest_pass(&shared, &ctx, Phase::InGame, Some(2400));
+        let a = shared.lock().unwrap().advice.clone().expect("advice");
+        assert_eq!(a.my_stats, Some((172, 48)));
+        assert_eq!(a.recap, None);
+        // You die to Caitlyn: the recap reaches the advice.
+        let mut dead = alive.clone();
+        dead.players[1].kills += 1;
+        dead.players[0].dead = true;
+        dead.players[0].deaths += 1;
+        {
+            let (want, _rx) = channel();
+            let mut s = shared.lock().unwrap();
+            store_roster(&mut s, &want, alive.clone());
+            store_roster(&mut s, &want, dead);
+        }
+        suggest_pass(&shared, &ctx, Phase::InGame, Some(2400));
+        let a = shared.lock().unwrap().advice.clone().expect("advice");
+        assert_eq!(a.recap.as_ref().map(|r| r.killers.clone()), Some(vec![51]));
+        assert_eq!(
+            shared.lock().unwrap().recap.killer(),
+            Some(suggest::Killer {
+                champion: 51,
+                times: 1
+            })
+        );
+        // The last advice feeds the next pass: the same input gives the same advice.
+        let before = shared.lock().unwrap().advice.clone();
+        suggest_pass(&shared, &ctx, Phase::InGame, Some(2400));
+        assert_eq!(shared.lock().unwrap().advice, before);
+    }
+
+    #[test]
+    fn the_last_advice_gives_the_previous_path_fed_and_rules() {
+        let last = Advice {
+            path: Some(3),
+            fed_rule: Some(51),
+            rules: suggest::RuleState {
+                vs_ap: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let p = prev_of(Some(&last));
+        assert_eq!((p.path, p.fed), (Some(3), Some(51)));
+        assert!(p.rules.is_some_and(|r| r.vs_ap));
+        let none = prev_of(None);
+        assert_eq!((none.path, none.fed, none.rules), (None, None, None));
     }
 
     #[test]
