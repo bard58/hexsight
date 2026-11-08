@@ -461,6 +461,9 @@ pub struct App {
     /// The signature of the advice (`Advice::signature`) and when it last changed. The overlay
     /// shows its advice card for `ADVICE_SHOW` after a change.
     advice_seen: Option<(u64, std::time::Instant)>,
+    /// The picks that are ready (you have the gold): when the glow started and when the pick was
+    /// last seen ready (`note_ready`).
+    ready_at: std::collections::HashMap<i64, ReadyMark>,
     /// Where the window is after the X of the main page (`hide_step`). The toast "Hexsight keeps
     /// running" waits for the window to come back: a minimized window shows no toast.
     hide: Hide,
@@ -1988,6 +1991,7 @@ fn cell_reason_text(lang: Lang, sd: &StaticData, r: Reason) -> String {
             &[&champion_name(sd, champion), &format!("{kills}/{deaths}")],
         ),
         Reason::VsKiller { .. } => lang.t(Key::ReasonVsKillerCell).to_string(),
+        Reason::AntiHeal(1) => lang.t(Key::ReasonAntiHealFedCell).to_string(),
         _ => reason_text(lang, sd, r),
     }
 }
@@ -2040,27 +2044,349 @@ fn champion_name(sd: &StaticData, id: i64) -> &str {
     sd.champions.get(&id).map_or("", |c| c.name.as_str())
 }
 
-/// The context line of the overlay card: "70% AP · Fed: Zed 9/2/4 · 2 healers". A part that does not
-/// exist is left out. `None` when no part exists. One healer is no part: the line says "healers" in
-/// the plural only, and the rule that uses healers starts at two.
+/// The context line of the overlay card: "70% AP · Fed: Zed 9/2/4 · 3 crit items · 2 healers". A part
+/// that does not exist is left out. `None` when no part exists. One healer is no part: the line says
+/// "healers" in the plural only, and the rule that uses healers starts at two. This is the full line;
+/// the window drops the kind part when the line is too wide (`context_text`).
 fn context_line(lang: Lang, sd: &StaticData, c: &GameContext) -> Option<String> {
+    context_text(lang, sd, c, true)
+}
+
+/// The context line with or without the build kind of the fed enemy (`kind_part`).
+fn context_text(lang: Lang, sd: &StaticData, c: &GameContext, kind: bool) -> Option<String> {
     let mut parts = Vec::new();
     if let Some(ap) = c.ap_pct {
         parts.push(mix_text(lang, ap));
     }
-    if let Some(f) = c.fed {
-        parts.push(lang.fmt(
-            Key::CtxFed,
-            &[
-                &champion_name(sd, f.champion),
-                &score_line(f.kills, f.deaths, f.assists),
-            ],
-        ));
+    if c.fed.is_some() {
+        parts.push(fed_text(lang, sd, c, kind));
     }
     if c.healers.len() >= 2 {
         parts.push(lang.fmt(Key::CtxHealersN, &[&c.healers.len()]));
     }
     (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
+/// The fed enemy as words: "Fed: Caitlyn 9/1/4", with " · 3 crit items" after it when `kind` is on and
+/// the enemy has a build kind. An empty text without a fed enemy.
+fn fed_text(lang: Lang, sd: &StaticData, c: &GameContext, kind: bool) -> String {
+    let Some(f) = c.fed else {
+        return String::new();
+    };
+    let base = lang.fmt(
+        Key::CtxFed,
+        &[
+            &champion_name(sd, f.champion),
+            &score_line(f.kills, f.deaths, f.assists),
+        ],
+    );
+    match kind.then(|| kind_part(lang, c)).flatten() {
+        Some(k) => format!("{base} · {k}"),
+        None => base,
+    }
+}
+
+/// The build kind of the fed enemy: "3 crit items", "heals", or both joined with ", ". Only a kind
+/// with two items or more counts. `None` when the fed enemy has neither.
+fn kind_part(lang: Lang, c: &GameContext) -> Option<String> {
+    let f = c.fed?;
+    let foe = c.foes.iter().find(|x| x.champion == f.champion)?;
+    let mut parts = Vec::new();
+    let (key, n) = match foe.kind {
+        suggest::FoeKind::Crit(n) => (Some(Key::CtxKindCrit), n),
+        suggest::FoeKind::Ap(n) => (Some(Key::CtxKindAp), n),
+        suggest::FoeKind::Ad(n) => (Some(Key::CtxKindAd), n),
+        suggest::FoeKind::Tank(n) => (Some(Key::CtxKindTank), n),
+        suggest::FoeKind::None => (None, 0),
+    };
+    if let Some(key) = key.filter(|_| n >= 2) {
+        parts.push(lang.fmt(key, &[&n]));
+    }
+    if foe.heals {
+        parts.push(lang.t(Key::CtxKindHeals).to_string());
+    }
+    (!parts.is_empty()).then(|| parts.join(", "))
+}
+
+/// The first text that fits, or `None` when none does.
+fn first_fit(texts: Vec<String>, fits: impl Fn(&str) -> bool) -> Option<String> {
+    texts.into_iter().find(|t| fits(t))
+}
+
+/// The first text that fits, else the last one (the window cuts it with "…"). `None` without texts.
+fn fit_or_last(texts: Vec<String>, fits: impl Fn(&str) -> bool) -> Option<String> {
+    let last = texts.last().cloned();
+    first_fit(texts, fits).or(last)
+}
+
+/// Names for a line: one name as it is, two with "and" ("ve"), three or more with ", ".
+fn join_names(lang: Lang, names: &[&str]) -> String {
+    match names {
+        [a, b] => lang.fmt(Key::JoinAnd, &[a, b]),
+        _ => names.join(", "),
+    }
+}
+
+/// The names of these champions, or `None` when Hexsight does not know one of them.
+fn names_of<'a>(sd: &'a StaticData, ids: &[i64]) -> Option<Vec<&'a str>> {
+    ids.iter()
+        .map(|id| sd.champions.get(id).map(|c| c.name.as_str()))
+        .collect()
+}
+
+/// The share of a side (ability power or attack damage) in the damage gold of a foe, 0 to 1. `None`
+/// when the foe has no damage gold.
+fn foe_share(f: &suggest::Foe, ap: bool) -> Option<f32> {
+    let total = u64::from(f.ap_gold) + u64::from(f.ad_gold);
+    let side = u64::from(if ap { f.ap_gold } else { f.ad_gold });
+    (total > 0).then(|| side as f32 / total as f32)
+}
+
+/// The enemies that a rule reason is about, for their faces and names (F6). The damage rules take
+/// the two foes with the most gold of that side among those with half of their gold or more on it
+/// (a tie goes to the lower id). Anti-heal takes the healers (one healer: the fed one), the tank rule
+/// the tanks, and the fed and killer rules their champion. A reason from the build data has none.
+fn reason_faces(r: Reason, ctx: &GameContext) -> Vec<i64> {
+    let side = |ap: bool| {
+        let mut foes: Vec<&suggest::Foe> = ctx
+            .foes
+            .iter()
+            .filter(|f| foe_share(f, ap).is_some_and(|s| s >= 0.5))
+            .collect();
+        foes.sort_by_key(|f| {
+            (
+                std::cmp::Reverse(if ap { f.ap_gold } else { f.ad_gold }),
+                f.champion,
+            )
+        });
+        foes.into_iter().take(2).map(|f| f.champion).collect()
+    };
+    match r {
+        Reason::VsAp(_) => side(true),
+        Reason::VsAd(_) => side(false),
+        Reason::AntiHeal(1) => ctx.healers.iter().take(1).copied().collect(),
+        Reason::AntiHeal(_) => ctx.healers.clone(),
+        Reason::VsTanks(_) => ctx.tanks.clone(),
+        Reason::VsFed { champion, .. } | Reason::VsKiller { champion, .. } => vec![champion],
+        _ => Vec::new(),
+    }
+}
+
+/// The most names that a reason of an item row holds. More read as the count form.
+const NAMED_MAX: usize = 3;
+
+/// The reason of a team rule as a sentence with the names of the enemies: "Amumu and Nautilus are
+/// tanky", "Soraka is fed and heals", "Vel'Koz, Lux: 70% AP". `None` for any other reason, when a name
+/// is not known, and when the names do not suit the sentence (one tank, more than three).
+fn named_reason_text(lang: Lang, sd: &StaticData, r: Reason, ctx: &GameContext) -> Option<String> {
+    let faces = reason_faces(r, ctx);
+    if faces.is_empty() || faces.len() > NAMED_MAX {
+        return None;
+    }
+    let names = names_of(sd, &faces)?;
+    let several = names.len() >= 2;
+    match r {
+        Reason::VsAp(p) => Some(lang.fmt(
+            Key::ReasonVsApNamed,
+            &[&names.join(", "), &lang.pct(f32::from(p), 0)],
+        )),
+        Reason::VsAd(p) => Some(lang.fmt(
+            Key::ReasonVsAdNamed,
+            &[&names.join(", "), &lang.pct(f32::from(p), 0)],
+        )),
+        Reason::AntiHeal(1) => Some(lang.fmt(Key::ReasonFedHealerNamed, &[&names[0]])),
+        Reason::AntiHeal(_) if several => {
+            Some(lang.fmt(Key::ReasonHealersNamed, &[&join_names(lang, &names)]))
+        }
+        Reason::VsTanks(_) if several => {
+            Some(lang.fmt(Key::ReasonTanksNamed, &[&join_names(lang, &names)]))
+        }
+        _ => None,
+    }
+}
+
+/// The reason texts of an item row, the best first: the sentence with the names, then the count form.
+fn row_reason_texts(
+    lang: Lang,
+    sd: &StaticData,
+    r: Reason,
+    ctx: Option<&GameContext>,
+) -> Vec<String> {
+    ctx.and_then(|c| named_reason_text(lang, sd, r, c))
+        .into_iter()
+        .chain([reason_text(lang, sd, r)])
+        .collect()
+}
+
+/// The size of an enemy face in a cell of the overlay, and the gap after it, in points.
+const FACE: f32 = 14.0;
+const FACE_GAP: f32 = 2.0;
+/// The most faces in a cell. The others count as "+N".
+const CELL_FACES: usize = 2;
+
+/// The short word after the faces in a cell: "tanky", "anti-heal", "fed 9/1". `None` for a reason
+/// without faces.
+fn cell_word(lang: Lang, r: Reason) -> Option<String> {
+    Some(match r {
+        Reason::VsTanks(_) => lang.t(Key::CellTanky).to_string(),
+        Reason::AntiHeal(_) => lang.t(Key::CellAntiHeal).to_string(),
+        Reason::VsAp(_) => lang.t(Key::CellMagic).to_string(),
+        Reason::VsAd(_) => lang.t(Key::CellPhysical).to_string(),
+        Reason::VsKiller { .. } => lang.t(Key::CellKilledYou).to_string(),
+        Reason::VsFed { kills, deaths, .. } => {
+            lang.fmt(Key::CellFed, &[&format!("{kills}/{deaths}")])
+        }
+        _ => return None,
+    })
+}
+
+/// The face form of a reason in a cell.
+#[derive(Clone, Debug, PartialEq)]
+struct CellFaces {
+    /// Up to two faces.
+    faces: Vec<i64>,
+    /// The faces that do not show: the "+N" badge on the last face. "+N" is a badge and not text
+    /// after the faces, so that the widest word ("büyü hasarı") still fits with two faces.
+    more: Option<String>,
+    /// The short word after the faces: "tanky", "fed 9/1".
+    word: String,
+}
+
+/// The face form of a reason in a cell. `None` for a reason without faces.
+fn cell_faces(lang: Lang, r: Reason, ctx: &GameContext) -> Option<CellFaces> {
+    let faces = reason_faces(r, ctx);
+    let word = cell_word(lang, r).filter(|_| !faces.is_empty())?;
+    let more = faces.len().saturating_sub(CELL_FACES);
+    Some(CellFaces {
+        more: (more > 0).then(|| lang.fmt(Key::CellMore, &[&more])),
+        faces: faces.into_iter().take(CELL_FACES).collect(),
+        word,
+    })
+}
+
+/// The width of the face form: the faces with their gaps, then the word of `word_w` points.
+fn cell_faces_w(faces: usize, word_w: f32) -> f32 {
+    faces as f32 * (FACE + FACE_GAP) + word_w
+}
+
+/// The "+N" badge on the top right corner of the last face, for a text of this size.
+fn more_badge(face: Rect, text: Vec2) -> Rect {
+    let size = text + vec2(4.0, 0.0);
+    Rect::from_min_size(
+        pos2(face.right() + FACE_GAP - size.x, face.top() - size.y / 2.0),
+        size,
+    )
+}
+
+/// How many times the killer of the recap killed you: the count of the killer rule on an item, else one.
+fn killer_times(a: &Advice, champion: i64) -> u8 {
+    a.items
+        .iter()
+        .find_map(|p| match p.reason {
+            Reason::VsKiller { champion: c, times } if c == champion => Some(times),
+            _ => None,
+        })
+        .unwrap_or(1)
+}
+
+/// The recap line while you are dead (F5), the fullest first: "Killed by Zed · 9/2/4 · 85% AD", then
+/// without the share, then without the score. A repeat killer: "Zed killed you 3 times · 9/2/4". Several
+/// enemies that scored: "Killed by Zed and Lux". Empty while alive, without a recap, and when Hexsight
+/// does not know a name.
+fn recap_texts(lang: Lang, sd: &StaticData, a: &Advice) -> Vec<String> {
+    let Some(r) = a
+        .recap
+        .as_ref()
+        .filter(|r| a.me_dead && !r.killers.is_empty())
+    else {
+        return Vec::new();
+    };
+    let Some(names) = names_of(sd, &r.killers) else {
+        return Vec::new();
+    };
+    if let [name] = names[..] {
+        let champion = r.killers[0];
+        let foe = a
+            .ctx
+            .as_ref()
+            .and_then(|c| c.foes.iter().find(|f| f.champion == champion));
+        let score = foe.map(|f| score_line(f.kills, f.deaths, f.assists));
+        let times = killer_times(a, champion);
+        let mut out = Vec::new();
+        if times >= 2 {
+            let base = lang.fmt(Key::RecapRepeat, &[&name, &times]);
+            if let Some(s) = &score {
+                out.push(format!("{base} · {s}"));
+            }
+            out.push(base);
+            return out;
+        }
+        let base = lang.fmt(Key::RecapKilledBy, &[&name]);
+        if let (Some(s), Some(f)) = (&score, foe) {
+            let ap = foe_share(f, true);
+            if let Some(ap) = ap {
+                let (side, label) = if ap >= 0.5 {
+                    (ap, "AP")
+                } else {
+                    (1.0 - ap, "AD")
+                };
+                let pct = ((side * 20.0).round() * 5.0).min(100.0);
+                out.push(format!("{base} · {s} · {} {label}", lang.pct(pct, 0)));
+            }
+            out.push(format!("{base} · {s}"));
+        }
+        out.push(base);
+        return out;
+    }
+    vec![lang.fmt(Key::RecapKilledBy, &[&join_names(lang, &names)])]
+}
+
+/// The style note of the "Next items" header, the best first: the path ("On your Malignance path")
+/// when the path tracker is sure of it, then the build style ("ap build").
+fn style_notes(lang: Lang, sd: &StaticData, a: &Advice) -> Vec<String> {
+    if a.no_build {
+        return Vec::new();
+    }
+    let path = a
+        .path
+        .and(a.path_item)
+        .and_then(|id| sd.items.get(&id))
+        .map(|it| lang.fmt(Key::SuggestPath, &[&it.name]));
+    let style =
+        (!a.style.is_empty()).then(|| lang.fmt(Key::SuggestStyle, &[&lang.style(&a.style)]));
+    path.into_iter().chain(style).collect()
+}
+
+/// The plan line under the picks (F7), the fullest first: "Then: X → Y", then "Then: X". Empty when the
+/// slots are full, without a plan, and for an item that Hexsight cannot name.
+fn plan_texts(lang: Lang, sd: &StaticData, a: &Advice) -> Vec<String> {
+    if a.slots_full || a.items.is_empty() {
+        return Vec::new();
+    }
+    let names: Vec<&str> = a
+        .plan
+        .iter()
+        .take(2)
+        .map_while(|id| sd.items.get(id).map(|it| it.name.as_str()))
+        .collect();
+    match names[..] {
+        [one, two] => vec![
+            lang.fmt(Key::PlanThen, &[&one, &two]),
+            lang.fmt(Key::PlanThenOne, &[&one]),
+        ],
+        [one] => vec![lang.fmt(Key::PlanThenOne, &[&one])],
+        _ => Vec::new(),
+    }
+}
+
+/// The tooltip of the summary card: the note of the estimate, and your own armor and magic resist
+/// when the Live Client gave both (F4). These are your stats, not a rate.
+fn summary_tip(lang: Lang, a: &Advice) -> String {
+    let note = lang.t(Key::CtxTip);
+    match a.my_stats {
+        Some((armor, mr)) => format!("{note}\n{}", lang.fmt(Key::TipMyStats, &[&armor, &mr])),
+        None => note.to_string(),
+    }
 }
 
 /// Has the summary card anything to show?
@@ -2069,13 +2395,15 @@ fn summary_has_rows(c: &GameContext) -> bool {
 }
 
 /// Has the overlay card anything to show, with these settings? The item cells need the setting for
-/// the item tips and at least one item. The context line needs the setting for the summary.
+/// the item tips and at least one item. The context line needs the setting for the summary. The
+/// recap line of a death shows with either setting.
 fn overlay_has_content(lang: Lang, sd: &StaticData, s: &Settings, a: &Advice) -> bool {
     (s.suggest_items && !a.items.is_empty())
         || (s.suggest_context
             && a.ctx
                 .as_ref()
                 .is_some_and(|c| context_line(lang, sd, c).is_some()))
+        || ((s.suggest_items || s.suggest_context) && !recap_texts(lang, sd, a).is_empty())
 }
 
 /// One consistent copy of the shared state per frame.
@@ -2273,6 +2601,7 @@ impl App {
             fix_clicked: None,
             seen_game,
             advice_seen: None,
+            ready_at: std::collections::HashMap::new(),
             hide: Hide::Shown,
             hidden_told: false,
             games_all: false,
@@ -3475,18 +3804,31 @@ impl App {
             Screen::Waiting => {
                 self.warning_banner(ui, v);
                 self.champion_row(ui, v);
+                if self.settings.suggest_items || self.settings.suggest_context {
+                    self.recap_row(ui, v);
+                }
                 if self.settings.suggest_items {
-                    // The build style is the note at the right of the header.
-                    let style = v
-                        .advice
-                        .as_deref()
-                        .filter(|a| !a.no_build && !a.style.is_empty())
-                        .map(|a| lang.fmt(Key::SuggestStyle, &[&lang.style(&a.style)]));
-                    section_note(
-                        ui,
-                        &lang.upper(lang.t(Key::SecNextItems)),
-                        style.as_deref().map(|t| (t, LABEL_3)),
-                    );
+                    // The path or the build style is the note at the right of the header. The path
+                    // gives way to the style when it is too wide.
+                    let header = lang.upper(lang.t(Key::SecNextItems));
+                    let font = FontId::new(11.0, semibold());
+                    let room = ui.available_width()
+                        - ui.painter()
+                            .layout_no_wrap(header.clone(), font.clone(), LABEL_3)
+                            .size()
+                            .x
+                        - 8.0;
+                    let style = match (&v.sd, v.advice.as_deref()) {
+                        (Some(sd), Some(a)) => fit_or_last(style_notes(lang, sd, a), |t| {
+                            ui.painter()
+                                .layout_no_wrap(t.to_string(), font.clone(), LABEL_3)
+                                .size()
+                                .x
+                                <= room
+                        }),
+                        _ => None,
+                    };
+                    section_note(ui, &header, style.as_deref().map(|t| (t, LABEL_3)));
                     self.items_card(ui, v);
                 }
                 if self.settings.suggest_context {
@@ -5803,6 +6145,80 @@ const ADVICE_CELL_H: f32 = 56.0;
 /// The gap between the cells of the advice card, in points.
 const ADVICE_GAP: f32 = 6.0;
 
+/// A pick that is ready: when its glow started, and when it was last seen ready.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ReadyMark {
+    since: std::time::Instant,
+    seen: std::time::Instant,
+}
+
+/// The glow of a ready pick pulses this long, then it rests.
+const GLOW_PULSE: std::time::Duration = std::time::Duration::from_millis(1200);
+
+/// A pick must be not ready this long before it glows again, so gold that goes up and down by a few
+/// coins makes no noise.
+const GLOW_AGAIN: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// The alpha of the green outline of a ready pick while it rests.
+const GLOW_REST: f32 = 0.35;
+
+/// Keep the marks of the ready picks (F8). A pick that turns ready gets a start time, unless it was
+/// ready less than `GLOW_AGAIN` ago: then it keeps its old start and does not pulse again. Without
+/// advice, or without the gold, the map is empty.
+fn note_ready(
+    map: &mut std::collections::HashMap<i64, ReadyMark>,
+    advice: Option<&Advice>,
+    now: std::time::Instant,
+) {
+    let Some(a) = advice.filter(|a| a.has_gold) else {
+        map.clear();
+        return;
+    };
+    for p in a.items.iter().filter(|p| p.ready) {
+        map.entry(p.id)
+            .and_modify(|m| {
+                if now.duration_since(m.seen) >= GLOW_AGAIN {
+                    m.since = now;
+                }
+                m.seen = now;
+            })
+            .or_insert(ReadyMark {
+                since: now,
+                seen: now,
+            });
+    }
+    map.retain(|_, m| now.duration_since(m.seen) < GLOW_AGAIN);
+}
+
+/// The pulse of the glow at this age: 0 at the start, 1 at 0.3 and 0.9 seconds, 0 at 0.6 and from
+/// 1.2 seconds on. Two pulses.
+fn glow_pulse(age: std::time::Duration) -> f32 {
+    if age >= GLOW_PULSE {
+        return 0.0;
+    }
+    let t = age.as_secs_f32();
+    0.5 - 0.5 * (std::f32::consts::TAU * t / 0.6).cos()
+}
+
+/// The alpha of the green outline of a ready pick (F8). While you are alive it is 0: the cell only
+/// has its green dot. While you are dead (the shop moment) the outline fades in, pulses twice in 1.2
+/// seconds, and then rests at `GLOW_REST`.
+fn ready_glow(age: std::time::Duration, dead: bool) -> f32 {
+    if !dead {
+        return 0.0;
+    }
+    if age >= GLOW_PULSE {
+        return GLOW_REST;
+    }
+    let fade = (age.as_secs_f32() / 0.15).min(1.0);
+    fade * (GLOW_REST + (1.0 - GLOW_REST) * glow_pulse(age))
+}
+
+/// The next frame that the glow needs: every 16 ms while it pulses, and none after.
+fn glow_repaint(age: std::time::Duration) -> Option<std::time::Duration> {
+    (age < GLOW_PULSE).then_some(std::time::Duration::from_millis(16))
+}
+
 /// The width of a cell of the advice card for a card of this inner width: three cells and two gaps.
 fn advice_cell_w(width: f32) -> f32 {
     (width - 2.0 * ADVICE_GAP) / 3.0
@@ -5811,6 +6227,11 @@ fn advice_cell_w(width: f32) -> f32 {
 impl App {
     /// Remember when the advice last changed. The overlay shows its advice card for `ADVICE_SHOW` after a change.
     fn note_advice(&mut self, v: &View) {
+        note_ready(
+            &mut self.ready_at,
+            v.advice.as_deref(),
+            std::time::Instant::now(),
+        );
         let sig = v.advice.as_ref().map(|a| a.signature());
         self.advice_seen = match (sig, self.advice_seen) {
             (None, _) => None,
@@ -5842,6 +6263,35 @@ impl App {
     /// A reason that comes from a rule of Hexsight is in the brighter ink and says so in its tooltip.
     /// The build style is the note at the right of the section header (`section_note`), and
     /// the note "From build data and Hexsight's own rules" is the tooltip of the card.
+    /// The recap line above "Next items" while you are dead (F5): who killed you, with the score and the
+    /// damage share of the killer when they fit. Nothing while alive.
+    fn recap_row(&self, ui: &mut Ui, v: &View) {
+        let (Some(sd), Some(a)) = (&v.sd, v.advice.as_deref()) else {
+            return;
+        };
+        let font = recap_font();
+        let room = ui.available_width();
+        let Some(line) = fit_or_last(recap_texts(self.lang, sd, a), |t| {
+            ui.painter()
+                .layout_no_wrap(t.to_string(), font.clone(), LABEL)
+                .size()
+                .x
+                <= room
+        }) else {
+            return;
+        };
+        ui.add_space(6.0);
+        let (row, _) = ui.allocate_exact_size(vec2(room, 18.0), Sense::hover());
+        text_at(
+            ui,
+            pos2(row.left(), row.center().y - 8.0),
+            &line,
+            font,
+            LABEL,
+            row.width(),
+        );
+    }
+
     fn items_card(&self, ui: &mut Ui, v: &View) {
         let lang = self.lang;
         ui.scope(|ui| {
@@ -5868,6 +6318,21 @@ impl App {
                         kit::hairline(ui, 0.0);
                     }
                     self.item_row(ui, v, sd, a, p, i);
+                }
+                // The plan line: the next items after the picks. It is cut to one step, and hidden
+                // when that does not fit either.
+                let font = FontId::proportional(11.5);
+                let room = ui.available_width();
+                let plan = first_fit(plan_texts(lang, sd, a), |t| {
+                    ui.painter()
+                        .layout_no_wrap(t.to_string(), font.clone(), LABEL_2)
+                        .size()
+                        .x
+                        <= room
+                });
+                if let Some(plan) = plan {
+                    ui.add_space(2.0);
+                    ui.label(egui::RichText::new(plan).font(font).color(LABEL_2));
                 }
             });
         })
@@ -5906,12 +6371,21 @@ impl App {
             LABEL,
             room,
         );
-        let reason = reason_text(lang, sd, p.reason);
+        // The sentence with the names, or the count form when it is too wide.
+        let reason_font = FontId::proportional(11.5);
+        let reason = fit_or_last(row_reason_texts(lang, sd, p.reason, a.ctx.as_ref()), |t| {
+            ui.painter()
+                .layout_no_wrap(t.to_string(), reason_font.clone(), LABEL)
+                .size()
+                .x
+                <= room
+        })
+        .unwrap_or_default();
         text_at(
             ui,
             pos2(x, r.top() + 22.0),
             &reason,
-            FontId::proportional(11.5),
+            reason_font,
             if p.reason.is_rule() { LABEL } else { LABEL_2 },
             room,
         );
@@ -5969,6 +6443,10 @@ impl App {
         if !summary_has_rows(c) {
             return;
         }
+        let tip = v
+            .advice
+            .as_deref()
+            .map_or_else(|| lang.t(Key::CtxTip).to_string(), |a| summary_tip(lang, a));
         kit::section(ui, &lang.upper(lang.t(Key::SecThisGame)));
         ui.scope(|ui| {
             kit::group(ui, |ui| {
@@ -6046,28 +6524,28 @@ impl App {
                             LABEL_2,
                         );
                     }
-                    let text = lang.fmt(
-                        Key::CtxFed,
-                        &[
-                            &champion_name(sd, f.champion),
-                            &score_line(f.kills, f.deaths, f.assists),
-                        ],
-                    );
                     let x = icon.right() + 8.0;
-                    text_at(
-                        ui,
-                        pos2(x, row.center().y - 8.0),
-                        &text,
-                        FontId::new(12.5, semibold()),
-                        LABEL,
-                        row.right() - x - level_w,
-                    );
+                    let room = row.right() - x - level_w;
+                    let font = FontId::new(12.5, semibold());
+                    // The kind of the fed enemy drops first when the row is too wide.
+                    let text = fit_or_last(
+                        vec![fed_text(lang, sd, c, true), fed_text(lang, sd, c, false)],
+                        |t| {
+                            ui.painter()
+                                .layout_no_wrap(t.to_string(), font.clone(), LABEL)
+                                .size()
+                                .x
+                                <= room
+                        },
+                    )
+                    .unwrap_or_default();
+                    text_at(ui, pos2(x, row.center().y - 8.0), &text, font, LABEL, room);
                 }
                 self.icon_rows(ui, sd, c);
             });
         })
         .response
-        .on_hover_text(lang.t(Key::CtxTip));
+        .on_hover_text(tip);
     }
 
     /// The healers and the tanks of the enemy team as small champion icons (three at most for each),
@@ -6192,11 +6670,34 @@ impl App {
         }
         // A black capture or Fullscreen must not hide behind this card.
         self.hint_lines(ui, v);
-        let line = self
-            .settings
-            .suggest_context
-            .then(|| a.ctx.as_ref().and_then(|c| context_line(lang, sd, c)))
+        // While you are dead, the recap line takes the place of the context line, so the card does not
+        // grow. Each line drops its parts when it is too wide (the share, then the score; the kind).
+        let line_font = FontId::new(11.5, semibold());
+        let room = ui.available_width();
+        let fits = |t: &str| {
+            ui.painter()
+                .layout_no_wrap(t.to_string(), line_font.clone(), LABEL)
+                .size()
+                .x
+                <= room
+        };
+        let recap = (self.settings.suggest_items || self.settings.suggest_context)
+            .then(|| fit_or_last(recap_texts(lang, sd, a), fits))
             .flatten();
+        let line = recap.or_else(|| {
+            self.settings
+                .suggest_context
+                .then(|| {
+                    a.ctx.as_ref().and_then(|c| {
+                        let texts = [true, false]
+                            .into_iter()
+                            .filter_map(|kind| context_text(lang, sd, c, kind))
+                            .collect();
+                        fit_or_last(texts, fits)
+                    })
+                })
+                .flatten()
+        });
         if let Some(line) = &line {
             let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 17.0), Sense::hover());
             text_at(
@@ -6253,11 +6754,34 @@ impl App {
             }
         }
         if a.has_gold && p.ready {
+            // While you are dead, a pick that turns ready glows: the outline fades in and the dot
+            // pulses twice, then the outline rests at a low alpha.
+            let age = self
+                .ready_at
+                .get(&p.id)
+                .map(|m| m.since.elapsed())
+                .unwrap_or(GLOW_PULSE);
+            let glow = ready_glow(age, a.me_dead);
+            if glow > 0.0 {
+                plate.rect_stroke(
+                    rect,
+                    CornerRadius::same(11),
+                    egui::Stroke::new(1.5, GREEN.gamma_multiply(glow)),
+                    egui::StrokeKind::Inside,
+                );
+            }
+            let pulse = if a.me_dead { glow_pulse(age) } else { 0.0 };
+            if a.me_dead
+                && let Some(next) = glow_repaint(age)
+            {
+                ui.ctx().request_repaint_after(next);
+            }
+            let r = 4.5 + 1.5 * pulse;
             ui.painter()
-                .circle_filled(icon.right_top() + vec2(-1.0, 1.0), 4.5, GREEN);
+                .circle_filled(icon.right_top() + vec2(-1.0, 1.0), r, GREEN);
             ui.painter().circle_stroke(
                 icon.right_top() + vec2(-1.0, 1.0),
-                4.5,
+                r,
                 egui::Stroke::new(1.0, PLATE),
             );
         }
@@ -6296,8 +6820,53 @@ impl App {
         let g = ui.painter().layout_job(job);
         ui.painter().galley(pos2(x, rect.top() + 3.0), g, LABEL);
         // The reason sits at the bottom of the cell: its last line ends 6 points above the edge.
-        let reason = cell_reason_text(lang, sd, p.reason);
         let ink = if p.reason.is_rule() { LABEL } else { LABEL_2 };
+        let room = rect.width() - 10.0;
+        if let Some(cf) = a.ctx.as_ref().and_then(|c| cell_faces(lang, p.reason, c)) {
+            // The faces of the enemies and a short word, when every face has its icon and all fits.
+            let faces = &cf.faces;
+            let urls: Vec<String> = faces
+                .iter()
+                .filter_map(|id| sd.champions.get(id).map(|c| c.icon.clone()))
+                .collect();
+            let loaded: Option<Vec<egui::load::Bytes>> =
+                urls.iter().map(|u| self.bytes(u)).collect();
+            let g = ui
+                .painter()
+                .layout_no_wrap(cf.word.clone(), advice_reason_font(), ink);
+            if let Some(loaded) = loaded.filter(|l| l.len() == faces.len())
+                && cell_faces_w(faces.len(), g.size().x) <= room
+            {
+                let bottom = rect.bottom() - ADVICE_REASON_BOTTOM;
+                let mut x = rect.left() + 5.0;
+                let mut last = None;
+                for (url, bytes) in urls.iter().zip(loaded) {
+                    let at = Rect::from_min_size(pos2(x, bottom - FACE), Vec2::splat(FACE));
+                    egui::Image::from_bytes(format!("bytes://{url}"), bytes)
+                        .corner_radius(4)
+                        .paint_at(ui, at);
+                    last = Some(at);
+                    x += FACE + FACE_GAP;
+                }
+                if let (Some(face), Some(more)) = (last, &cf.more) {
+                    let m = ui
+                        .painter()
+                        .layout_no_wrap(more.clone(), cell_short_font(), LABEL);
+                    let badge = more_badge(face, m.size());
+                    ui.painter().rect_filled(
+                        badge,
+                        CornerRadius::same(3),
+                        Color32::from_black_alpha(190),
+                    );
+                    ui.painter()
+                        .galley(badge.center() - m.size() / 2.0, m, LABEL);
+                }
+                let y = bottom - FACE / 2.0 - g.size().y / 2.0;
+                ui.painter().galley(pos2(x, y), g, ink);
+                return;
+            }
+        }
+        let reason = cell_reason_text(lang, sd, p.reason);
         let mut job = egui::text::LayoutJob::single_section(
             reason,
             egui::TextFormat::simple(advice_reason_font(), ink),
@@ -6323,6 +6892,11 @@ fn advice_name_font() -> FontId {
 }
 fn advice_reason_font() -> FontId {
     FontId::new(11.0, semibold())
+}
+
+/// The font of the recap line in the main window.
+fn recap_font() -> FontId {
+    FontId::new(12.5, semibold())
 }
 
 /// The font of the missing gold at the bottom of the icon of a cell.
@@ -11574,6 +12148,11 @@ mod tests {
 
     /// Static data for the suggestion tests: some items, the champions of an enemy team, and an augment.
     fn suggest_data() -> Arc<StaticData> {
+        Arc::new(suggest_static())
+    }
+
+    /// The data of `suggest_data`, to add to.
+    fn suggest_static() -> StaticData {
         let mut sd = StaticData::default();
         for (id, name) in [
             (2503, "Blackfire Torch"),
@@ -11625,7 +12204,7 @@ mod tests {
                 },
             );
         }
-        Arc::new(sd)
+        sd
     }
 
     /// Three suggested items: a core item, an item that a rule raised, and an anti-heal item.
@@ -11809,7 +12388,11 @@ mod tests {
                 "Blackfire Torch".to_string(),
                 lang.fmt(Key::ReasonCore, &[&1]),
                 lang.fmt(Key::ReasonVsAp, &[&lang.pct(70.0, 0)]),
-                lang.fmt(Key::ReasonAntiHeal, &[&2]),
+                // The anti-heal row names the two healers (v0.1.3); the overlay cell keeps the count.
+                lang.fmt(
+                    Key::ReasonHealersNamed,
+                    &[&lang.fmt(Key::JoinAnd, &[&"Soraka", &"Yuumi"])],
+                ),
                 lang.upper(lang.t(Key::SecThisGame)),
                 lang.t(Key::CtxEnemyDamage).to_string(),
                 mix_text(lang, 70),
@@ -12208,6 +12791,15 @@ mod tests {
             Reason::AntiHeal(5),
             Reason::AntiHeal(1),
             Reason::VsTanks(5),
+            Reason::VsFed {
+                champion: 4,
+                kills: 12,
+                deaths: 10,
+            },
+            Reason::VsKiller {
+                champion: 4,
+                times: 12,
+            },
         ];
         for lang in [Lang::En, Lang::Tr] {
             for r in worst {
@@ -12246,6 +12838,15 @@ mod tests {
             Reason::AntiHeal(5),
             Reason::AntiHeal(1),
             Reason::VsTanks(5),
+            Reason::VsFed {
+                champion: 4,
+                kills: 12,
+                deaths: 10,
+            },
+            Reason::VsKiller {
+                champion: 4,
+                times: 12,
+            },
         ];
         for lang in [Lang::En, Lang::Tr] {
             // A pair has the short text in a cell, also with a long augment name.
@@ -12357,9 +12958,18 @@ mod tests {
             reason_text(Lang::En, &sd, Reason::AntiHeal(1)),
             "vs a fed healer"
         );
+        // v0.1.3: "1 iyileştirene karşı" read stiff; Turkish players say "fed". The cell has a shorter form.
         assert_eq!(
             reason_text(Lang::Tr, &sd, Reason::AntiHeal(1)),
-            "1 iyileştirene karşı"
+            "fed iyileştirene karşı"
+        );
+        assert_eq!(
+            cell_reason_text(Lang::Tr, &sd, Reason::AntiHeal(1)),
+            "fed iyileştiren"
+        );
+        assert_eq!(
+            cell_reason_text(Lang::En, &sd, Reason::AntiHeal(1)),
+            "vs a fed healer"
         );
         assert_eq!(
             reason_text(Lang::En, &sd, Reason::AntiHeal(2)),
@@ -12422,6 +13032,1046 @@ mod tests {
             });
             note.drop_without_applying_deltas();
         }
+    }
+
+    /// The data of the tests of v0.1.3: the suggestion data with long champion names too.
+    fn tip_data() -> Arc<StaticData> {
+        let mut sd = suggest_static();
+        for (id, name) in [
+            (82, "Mordekaiser"),
+            (223, "Tahm Kench"),
+            (161, "Vel'Koz"),
+            (99, "Lux"),
+            (136, "Aurelion Sol"),
+            (51, "Caitlyn"),
+            (32, "Amumu"),
+        ] {
+            sd.champions.insert(
+                id,
+                Champion {
+                    id,
+                    name: name.into(),
+                    alias: name.into(),
+                    icon: format!("face-{id}"),
+                },
+            );
+        }
+        Arc::new(sd)
+    }
+
+    /// A known enemy with its score line and its damage gold.
+    fn foe(champion: i64, kda: (u16, u16, u16), ap_gold: u32, ad_gold: u32) -> suggest::Foe {
+        suggest::Foe {
+            champion,
+            kills: kda.0,
+            deaths: kda.1,
+            assists: kda.2,
+            ap_gold,
+            ad_gold,
+            ..Default::default()
+        }
+    }
+
+    /// A context with these foes, healers and tanks.
+    fn foes_ctx(foes: Vec<suggest::Foe>, healers: Vec<i64>, tanks: Vec<i64>) -> GameContext {
+        GameContext {
+            ap_pct: Some(70),
+            healers,
+            tanks,
+            enemies: 5,
+            foes,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn ready_glow_is_zero_while_alive() {
+        use std::time::Duration;
+        for ms in [0, 300, 600, 1200, 5000] {
+            assert_eq!(ready_glow(Duration::from_millis(ms), false), 0.0, "{ms}");
+        }
+    }
+
+    #[test]
+    fn ready_glow_pulses_then_rests() {
+        use std::time::Duration;
+        let at = |ms: u64| ready_glow(Duration::from_millis(ms), true);
+        assert_eq!(at(0), 0.0);
+        assert!((at(300) - 1.0).abs() < 0.01, "{}", at(300));
+        assert!((at(600) - GLOW_REST).abs() < 0.01, "{}", at(600));
+        assert!((at(900) - 1.0).abs() < 0.01, "{}", at(900));
+        assert_eq!(at(1200), GLOW_REST);
+        assert_eq!(at(5000), GLOW_REST);
+        // It fades in: the first frames are dim.
+        assert!(at(16) < 0.2, "{}", at(16));
+        // The dot pulses twice: up at 0.3 and 0.9 s, down at 0.6 s, still after 1.2 s.
+        let pulse = |ms: u64| glow_pulse(Duration::from_millis(ms));
+        assert!(pulse(300) > 0.99 && pulse(900) > 0.99);
+        assert!(pulse(600) < 0.01 && pulse(1200) == 0.0 && pulse(5000) == 0.0);
+    }
+
+    #[test]
+    fn repaint_only_inside_1_2_s() {
+        use std::time::Duration;
+        assert_eq!(
+            glow_repaint(Duration::ZERO),
+            Some(Duration::from_millis(16))
+        );
+        assert_eq!(
+            glow_repaint(Duration::from_millis(1199)),
+            Some(Duration::from_millis(16))
+        );
+        assert_eq!(glow_repaint(Duration::from_millis(1200)), None);
+        assert_eq!(glow_repaint(Duration::from_secs(30)), None);
+    }
+
+    #[test]
+    fn a_pick_that_turns_ready_gets_a_start_time() {
+        use std::time::Duration;
+        let t0 = std::time::Instant::now();
+        let mut map = std::collections::HashMap::new();
+        // game_advice: 6653 is ready, 2503 and 3165 are not.
+        let mut a = game_advice();
+        note_ready(&mut map, Some(&a), t0);
+        assert_eq!(map.keys().copied().collect::<Vec<_>>(), [6653]);
+        assert_eq!(map[&6653].since, t0);
+        // Still ready a second later: the same start.
+        note_ready(&mut map, Some(&a), t0 + Duration::from_secs(1));
+        assert_eq!(map[&6653].since, t0);
+        // 2503 turns ready: it gets its own start.
+        a.items[0].ready = true;
+        let t1 = t0 + Duration::from_secs(2);
+        note_ready(&mut map, Some(&a), t1);
+        assert_eq!(map[&2503].since, t1);
+        // Gold jitter: not ready for a moment, then ready again within 3 s keeps the start.
+        a.items[0].ready = false;
+        note_ready(&mut map, Some(&a), t1 + Duration::from_millis(500));
+        a.items[0].ready = true;
+        note_ready(&mut map, Some(&a), t1 + Duration::from_secs(2));
+        assert_eq!(map[&2503].since, t1);
+        // Not ready for 3 s or more: it glows again from the new start.
+        a.items[0].ready = false;
+        let t2 = t1 + Duration::from_secs(2);
+        note_ready(&mut map, Some(&a), t2 + Duration::from_secs(1));
+        a.items[0].ready = true;
+        let t3 = t2 + Duration::from_secs(4);
+        note_ready(&mut map, Some(&a), t3);
+        assert_eq!(map[&2503].since, t3);
+    }
+
+    #[test]
+    fn the_ready_map_clears_without_advice() {
+        let t0 = std::time::Instant::now();
+        let mut map = std::collections::HashMap::new();
+        note_ready(&mut map, Some(&game_advice()), t0);
+        assert!(!map.is_empty());
+        note_ready(&mut map, None, t0);
+        assert!(map.is_empty());
+        // Without the gold, `ready` means nothing.
+        note_ready(&mut map, Some(&game_advice()), t0);
+        let no_gold = Advice {
+            has_gold: false,
+            ..game_advice()
+        };
+        note_ready(&mut map, Some(&no_gold), t0);
+        assert!(map.is_empty());
+        // The app keeps the map in `note_advice`.
+        let mut app = test_app(Settings::default(), Lang::En);
+        app.note_advice(&waiting_view(Some(game_advice())));
+        assert!(app.ready_at.contains_key(&6653));
+        app.note_advice(&waiting_view(None));
+        assert!(app.ready_at.is_empty());
+    }
+
+    #[test]
+    fn a_ready_pick_glows_green_while_dead_and_not_while_alive() {
+        let outlines = |dead: bool| {
+            let mut app = test_app(Settings::default(), Lang::En);
+            let a = Advice {
+                me_dead: dead,
+                ..game_advice()
+            };
+            let v = waiting_view(Some(a));
+            app.note_advice(&v);
+            // The pick turned ready two seconds ago: the glow rests.
+            for m in app.ready_at.values_mut() {
+                m.since -= std::time::Duration::from_secs(2);
+            }
+            let ctx = egui::Context::default();
+            theme::setup(&ctx);
+            let mut strokes = 0;
+            for i in 0..3 {
+                let input = egui::RawInput {
+                    time: Some(i as f64 / 10.0),
+                    screen_rect: Some(Rect::from_min_size(
+                        pos2(0.0, 0.0),
+                        vec2(OVERLAY_WINDOW_W, 400.0),
+                    )),
+                    ..Default::default()
+                };
+                let out = ctx.run_ui(input, |ui| app.overlay_ui(ui, &v));
+                strokes = shapes_in_order(&out.shapes)
+                    .iter()
+                    .filter(|s| match s {
+                        egui::Shape::Rect(r) => {
+                            r.stroke.width == 1.5
+                                && r.stroke.color.g() > r.stroke.color.r()
+                                && r.stroke.color.a() > 0
+                        }
+                        _ => false,
+                    })
+                    .count();
+                out.drop_without_applying_deltas();
+            }
+            strokes
+        };
+        // One ready pick (6653): one green outline while dead, none while alive.
+        assert_eq!(outlines(true), 1);
+        assert_eq!(outlines(false), 0);
+    }
+
+    #[test]
+    fn reason_faces_is_empty_for_data_reasons() {
+        let c = foes_ctx(
+            vec![foe(4, (9, 2, 4), 0, 3000), foe(99, (1, 1, 1), 3000, 0)],
+            vec![6, 8],
+            vec![5, 3],
+        );
+        for r in [
+            Reason::Core(1),
+            Reason::Boots,
+            Reason::Later,
+            Reason::Slot(3),
+            Reason::OtherBuild,
+            Reason::Pairs {
+                augment: 3150,
+                known: true,
+            },
+        ] {
+            assert!(reason_faces(r, &c).is_empty(), "{r:?}");
+            for lang in [Lang::En, Lang::Tr] {
+                assert_eq!(cell_faces(lang, r, &c), None, "{r:?}");
+                assert_eq!(named_reason_text(lang, &tip_data(), r, &c), None, "{r:?}");
+            }
+        }
+        // The team rules take their lists, one healer is the fed one (the first), and the fed and
+        // killer rules take their champion.
+        assert_eq!(reason_faces(Reason::AntiHeal(2), &c), [6, 8]);
+        assert_eq!(reason_faces(Reason::AntiHeal(1), &c), [6]);
+        assert_eq!(reason_faces(Reason::VsTanks(2), &c), [5, 3]);
+        assert_eq!(
+            reason_faces(
+                Reason::VsFed {
+                    champion: 51,
+                    kills: 9,
+                    deaths: 1
+                },
+                &c
+            ),
+            [51]
+        );
+        assert_eq!(
+            reason_faces(
+                Reason::VsKiller {
+                    champion: 4,
+                    times: 2
+                },
+                &c
+            ),
+            [4]
+        );
+    }
+
+    #[test]
+    fn a_marksman_is_never_an_ap_face() {
+        // Caitlyn has only attack damage gold, Vel'Koz only ability power, Zed a little of both.
+        let c = foes_ctx(
+            vec![
+                foe(51, (5, 1, 2), 0, 4000),
+                foe(161, (2, 2, 2), 3500, 0),
+                foe(4, (3, 3, 3), 1000, 2000),
+                foe(99, (1, 1, 1), 2000, 500),
+            ],
+            vec![],
+            vec![],
+        );
+        assert_eq!(reason_faces(Reason::VsAp(70), &c), [161, 99]);
+        assert_eq!(reason_faces(Reason::VsAd(70), &c), [51, 4]);
+        assert!(!reason_faces(Reason::VsAp(100), &c).contains(&51));
+        // A foe with no damage gold is no face for either side.
+        let empty = foes_ctx(vec![foe(51, (0, 0, 0), 0, 0)], vec![], vec![]);
+        assert!(reason_faces(Reason::VsAp(70), &empty).is_empty());
+        assert!(reason_faces(Reason::VsAd(70), &empty).is_empty());
+    }
+
+    #[test]
+    fn face_order_is_stable_for_equal_gold() {
+        let a = foes_ctx(
+            vec![
+                foe(161, (0, 0, 0), 2000, 0),
+                foe(99, (0, 0, 0), 2000, 0),
+                foe(136, (0, 0, 0), 2000, 0),
+            ],
+            vec![],
+            vec![],
+        );
+        let mut b = a.clone();
+        b.foes.reverse();
+        // A tie goes to the lower champion id, whatever the order of the roster.
+        assert_eq!(reason_faces(Reason::VsAp(80), &a), [99, 136]);
+        assert_eq!(reason_faces(Reason::VsAp(80), &b), [99, 136]);
+        let sd = tip_data();
+        assert_eq!(
+            named_reason_text(Lang::En, &sd, Reason::VsAp(80), &a),
+            named_reason_text(Lang::En, &sd, Reason::VsAp(80), &b)
+        );
+    }
+
+    #[test]
+    fn the_named_reasons_read_in_both_languages() {
+        let sd = tip_data();
+        let c = foes_ctx(
+            vec![foe(161, (2, 2, 2), 3500, 0), foe(99, (1, 1, 1), 2000, 500)],
+            vec![6, 8],
+            vec![32, 5],
+        );
+        let say = |lang: Lang, r: Reason| named_reason_text(lang, &sd, r, &c);
+        assert_eq!(
+            say(Lang::En, Reason::VsTanks(2)).as_deref(),
+            Some("Amumu and Malphite are tanky")
+        );
+        assert_eq!(
+            say(Lang::Tr, Reason::VsTanks(2)).as_deref(),
+            Some("Amumu ve Malphite tank")
+        );
+        assert_eq!(
+            say(Lang::En, Reason::AntiHeal(2)).as_deref(),
+            Some("Soraka and Yuumi heal")
+        );
+        assert_eq!(
+            say(Lang::Tr, Reason::AntiHeal(2)).as_deref(),
+            Some("Soraka ve Yuumi iyileşiyor")
+        );
+        assert_eq!(
+            say(Lang::En, Reason::AntiHeal(1)).as_deref(),
+            Some("Soraka is fed and heals")
+        );
+        assert_eq!(
+            say(Lang::Tr, Reason::AntiHeal(1)).as_deref(),
+            Some("Soraka fed, iyileşiyor")
+        );
+        assert_eq!(
+            say(Lang::En, Reason::VsAp(70)).as_deref(),
+            Some("Vel'Koz, Lux: 70% AP")
+        );
+        assert_eq!(
+            say(Lang::Tr, Reason::VsAp(70)).as_deref(),
+            Some("Vel'Koz, Lux: %70 AP")
+        );
+        // Three names join with commas.
+        let three = foes_ctx(vec![], vec![], vec![32, 5, 3]);
+        assert_eq!(
+            named_reason_text(Lang::En, &sd, Reason::VsTanks(3), &three).as_deref(),
+            Some("Amumu, Malphite, Garen are tanky")
+        );
+        // One tank, four tanks, and a name that Hexsight does not know read as the count form.
+        for ctx in [
+            foes_ctx(vec![], vec![], vec![32]),
+            foes_ctx(vec![], vec![], vec![32, 5, 3, 10]),
+            foes_ctx(vec![], vec![], vec![32, 777]),
+        ] {
+            assert_eq!(
+                named_reason_text(Lang::En, &sd, Reason::VsTanks(2), &ctx),
+                None
+            );
+            assert_eq!(
+                row_reason_texts(Lang::En, &sd, Reason::VsTanks(2), Some(&ctx)),
+                ["vs 2 tanks"]
+            );
+        }
+        // Without a context the row has the count form only, and the sentence comes first else.
+        assert_eq!(
+            row_reason_texts(Lang::Tr, &sd, Reason::VsTanks(2), None),
+            ["2 tanka karşı"]
+        );
+        assert_eq!(
+            row_reason_texts(Lang::Tr, &sd, Reason::VsTanks(2), Some(&c)),
+            ["Amumu ve Malphite tank", "2 tanka karşı"]
+        );
+        // No named text holds a share, except the two damage rules.
+        for lang in [Lang::En, Lang::Tr] {
+            for r in [Reason::VsTanks(2), Reason::AntiHeal(2), Reason::AntiHeal(1)] {
+                let t = say(lang, r).unwrap();
+                assert!(!t.contains('%'), "{lang:?} {t}");
+            }
+            for r in [Reason::VsAp(70), Reason::VsAd(70)] {
+                let ad = foes_ctx(vec![foe(51, (0, 0, 0), 0, 3000)], vec![], vec![]);
+                let ctx = if matches!(r, Reason::VsAd(_)) {
+                    &ad
+                } else {
+                    &c
+                };
+                let t = named_reason_text(lang, &sd, r, ctx).unwrap();
+                assert!(t.contains('%'), "{lang:?} {t}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_named_reasons_fit_the_item_row_or_fall_back() {
+        let ctx = egui::Context::default();
+        theme::setup(&ctx);
+        let sd = tip_data();
+        let room = CARD_INNER - ITEM_ICON - 8.0 - ITEM_CHIP_W;
+        let font = FontId::proportional(11.5);
+        let fits = |t: &str| text_width(&ctx, t, font.clone()) <= room;
+        let wide = foes_ctx(
+            vec![foe(82, (0, 0, 0), 4000, 0), foe(136, (0, 0, 0), 3900, 0)],
+            vec![82, 223],
+            vec![82, 223],
+        );
+        let wider = foes_ctx(vec![], vec![136, 223, 82], vec![82, 223, 136]);
+        for lang in [Lang::En, Lang::Tr] {
+            for c in [&wide, &wider] {
+                for r in [
+                    Reason::VsTanks(2),
+                    Reason::VsTanks(3),
+                    Reason::AntiHeal(2),
+                    Reason::AntiHeal(1),
+                    Reason::VsAp(100),
+                ] {
+                    let texts = row_reason_texts(lang, &sd, r, Some(c));
+                    let shown = fit_or_last(texts.clone(), fits).unwrap();
+                    // The text that shows fits; when the sentence does not, the count form shows.
+                    assert!(fits(&shown), "{lang:?} {shown:?}");
+                    if !fits(&texts[0]) {
+                        assert_eq!(shown, reason_text(lang, &sd, r), "{lang:?}");
+                    }
+                }
+            }
+        }
+        // The Turkish two-tank sentence with the longest names is too wide, so the count form shows.
+        let t = named_reason_text(Lang::Tr, &sd, Reason::VsTanks(2), &wide).unwrap();
+        assert_eq!(t, "Mordekaiser ve Tahm Kench tank");
+        assert_eq!(
+            fit_or_last(
+                row_reason_texts(Lang::Tr, &sd, Reason::VsTanks(2), Some(&wide)),
+                fits
+            )
+            .as_deref(),
+            Some(if fits(&t) {
+                t.as_str()
+            } else {
+                "2 tanka karşı"
+            })
+        );
+        // Two short names fit.
+        let short = foes_ctx(vec![], vec![], vec![32, 5]);
+        for lang in [Lang::En, Lang::Tr] {
+            let t = named_reason_text(lang, &sd, Reason::VsTanks(2), &short).unwrap();
+            assert!(fits(&t), "{lang:?} {t}");
+        }
+        // The fed and the killer reasons name their champion and fit with a long name.
+        for lang in [Lang::En, Lang::Tr] {
+            for r in [
+                Reason::VsFed {
+                    champion: 136,
+                    kills: 12,
+                    deaths: 0,
+                },
+                Reason::VsKiller {
+                    champion: 223,
+                    times: 3,
+                },
+                Reason::VsKiller {
+                    champion: 82,
+                    times: 1,
+                },
+            ] {
+                let t = reason_text(lang, &sd, r);
+                assert!(
+                    fits(&t),
+                    "{lang:?} {t:?}: {:.1}",
+                    text_width(&ctx, &t, font.clone())
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_faces_and_their_word_fit_an_overlay_cell() {
+        let ctx = egui::Context::default();
+        theme::setup(&ctx);
+        let room = advice_cell_w(OVERLAY_STRIP_W - 28.0) - 10.0;
+        for lang in [Lang::En, Lang::Tr] {
+            // Two faces and the widest word. "+3" is a badge on the last face: it stays in the column
+            // of the faces and adds no width.
+            let words = [
+                Key::CellTanky,
+                Key::CellAntiHeal,
+                Key::CellMagic,
+                Key::CellPhysical,
+            ]
+            .map(|k| lang.t(k).to_string());
+            for word in words {
+                let w = cell_faces_w(CELL_FACES, text_width(&ctx, &word, advice_reason_font()));
+                assert!(w <= room, "{lang:?} {word:?} needs {w:.1} of {room:.1}");
+            }
+            let face = Rect::from_min_size(pos2(5.0 + FACE + FACE_GAP, 36.0), Vec2::splat(FACE));
+            let more = lang.fmt(Key::CellMore, &[&3]);
+            let size = vec2(text_width(&ctx, &more, cell_short_font()), 11.0);
+            let badge = more_badge(face, size);
+            assert!(badge.left() >= face.left() - 2.0, "{badge:?} in {face:?}");
+            assert!(
+                badge.right() <= face.right() + FACE_GAP,
+                "{badge:?} in {face:?}"
+            );
+            // The fed and the killer rules have one face and no "+N".
+            for word in [
+                lang.fmt(Key::CellFed, &[&"12/10"]),
+                lang.t(Key::CellKilledYou).to_string(),
+            ] {
+                let w = cell_faces_w(1, text_width(&ctx, &word, advice_reason_font()));
+                assert!(w <= room, "{lang:?} {word:?} needs {w:.1} of {room:.1}");
+            }
+            // Five tanks: two faces and "+3".
+            let c = foes_ctx(vec![], vec![], vec![32, 5, 3, 10, 82]);
+            assert_eq!(
+                cell_faces(lang, Reason::VsTanks(5), &c),
+                Some(CellFaces {
+                    faces: vec![32, 5],
+                    more: Some("+3".into()),
+                    word: lang.t(Key::CellTanky).to_string()
+                })
+            );
+            // Two healers: two faces and the word, no "+0".
+            let c = foes_ctx(vec![], vec![6, 8], vec![]);
+            assert_eq!(
+                cell_faces(lang, Reason::AntiHeal(2), &c),
+                Some(CellFaces {
+                    faces: vec![6, 8],
+                    more: None,
+                    word: lang.t(Key::CellAntiHeal).to_string()
+                })
+            );
+            // The fed rule: one face and "fed 9/1".
+            let fed = Reason::VsFed {
+                champion: 51,
+                kills: 9,
+                deaths: 1,
+            };
+            assert_eq!(
+                cell_faces(lang, fed, &c).map(|f| f.word),
+                Some("fed 9/1".to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn a_cell_shows_the_count_form_while_the_faces_are_not_loaded() {
+        // The test data has no icon bytes, so the cells keep the text form of today.
+        let mut a = game_advice();
+        a.me_dead = true;
+        a.items[2].reason = Reason::VsTanks(3);
+        let v = waiting_view(Some(a));
+        for lang in [Lang::En, Lang::Tr] {
+            let (texts, _) = overlay_texts(lang, &v);
+            assert!(
+                texts.contains(&lang.fmt(Key::ReasonVsTanks, &[&3])),
+                "{lang:?}: {texts:?}"
+            );
+            assert!(
+                !texts.contains(&lang.t(Key::CellTanky).to_string()),
+                "{lang:?}: {texts:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_item_row_names_the_enemies() {
+        let v = waiting_view(Some(game_advice()));
+        for lang in [Lang::En, Lang::Tr] {
+            let app = test_app(Settings::default(), lang);
+            let texts = part_texts(&app, |app, ui| app.items_card(ui, &v));
+            let named = lang.fmt(
+                Key::ReasonHealersNamed,
+                &[&lang.fmt(Key::JoinAnd, &[&"Soraka", &"Yuumi"])],
+            );
+            assert!(texts.contains(&named), "{lang:?}: {texts:?}");
+            assert!(
+                !texts.contains(&lang.fmt(Key::ReasonAntiHeal, &[&2])),
+                "{lang:?}: {texts:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_context_line_names_the_build_kind_of_the_fed_enemy() {
+        let sd = suggest_data();
+        let mut c = game_advice().ctx.unwrap();
+        c.foes = vec![suggest::Foe {
+            kind: suggest::FoeKind::Crit(3),
+            ..foe(4, (9, 2, 4), 0, 3000)
+        }];
+        assert_eq!(
+            context_line(Lang::En, &sd, &c).as_deref(),
+            Some("70% AP · 30% AD · Fed: Zed 9/2/4 · 3 crit items · 2 healers")
+        );
+        assert_eq!(
+            context_line(Lang::Tr, &sd, &c).as_deref(),
+            Some("%70 AP · %30 AD · Fed: Zed 9/2/4 · 3 kritik eşyası · 2 iyileştiren")
+        );
+        assert_eq!(
+            context_text(Lang::En, &sd, &c, false).as_deref(),
+            Some("70% AP · 30% AD · Fed: Zed 9/2/4 · 2 healers")
+        );
+        // A healer adds its word, joined with ", ".
+        c.foes[0].heals = true;
+        assert_eq!(
+            kind_part(Lang::En, &c).as_deref(),
+            Some("3 crit items, heals")
+        );
+        assert_eq!(
+            kind_part(Lang::Tr, &c).as_deref(),
+            Some("3 kritik eşyası, iyileşiyor")
+        );
+        for (kind, en, tr) in [
+            (suggest::FoeKind::Ap(2), "2 AP items", "2 AP eşyası"),
+            (suggest::FoeKind::Ad(4), "4 AD items", "4 AD eşyası"),
+            (
+                suggest::FoeKind::Tank(3),
+                "3 resist items",
+                "3 direnç eşyası",
+            ),
+        ] {
+            c.foes[0] = suggest::Foe {
+                kind,
+                ..foe(4, (9, 2, 4), 0, 3000)
+            };
+            assert_eq!(kind_part(Lang::En, &c).as_deref(), Some(en));
+            assert_eq!(kind_part(Lang::Tr, &c).as_deref(), Some(tr));
+        }
+        // No kind, a kind of one item, or no foe entry: no part.
+        for kind in [suggest::FoeKind::None, suggest::FoeKind::Crit(1)] {
+            c.foes[0].kind = kind;
+            assert_eq!(kind_part(Lang::En, &c), None);
+        }
+        c.foes.clear();
+        assert_eq!(kind_part(Lang::En, &c), None);
+    }
+
+    #[test]
+    fn the_kind_part_drops_first_when_the_line_or_the_row_is_too_wide() {
+        let ctx = egui::Context::default();
+        theme::setup(&ctx);
+        let sd = tip_data();
+        let c = GameContext {
+            ap_pct: Some(55),
+            fed: Some(suggest::Fed {
+                champion: 136,
+                kills: 15,
+                deaths: 4,
+                assists: 12,
+                level: 18,
+            }),
+            healers: vec![6, 8, 223],
+            enemies: 5,
+            foes: vec![suggest::Foe {
+                kind: suggest::FoeKind::Tank(4),
+                heals: true,
+                ..foe(136, (15, 4, 12), 3000, 0)
+            }],
+            ..Default::default()
+        };
+        let line_font = FontId::new(11.5, semibold());
+        let row_font = FontId::new(12.5, semibold());
+        let line_fits = |t: &str| text_width(&ctx, t, line_font.clone()) <= 312.0;
+        for lang in [Lang::En, Lang::Tr] {
+            // The overlay line: the full line is too wide here, so the kind drops.
+            let texts: Vec<String> = [true, false]
+                .into_iter()
+                .filter_map(|k| context_text(lang, &sd, &c, k))
+                .collect();
+            assert_eq!(texts.len(), 2);
+            let shown = fit_or_last(texts.clone(), line_fits).unwrap();
+            assert!(line_fits(&shown), "{lang:?} {shown}");
+            if !line_fits(&texts[0]) {
+                assert_eq!(shown, texts[1]);
+            }
+            // The fed row of the summary card: the icon, the text and the level in 246 points.
+            let level = text_width(
+                &ctx,
+                &lang.fmt(Key::Level, &[&18]),
+                FontId::proportional(11.5),
+            );
+            let room = CARD_INNER - SUMMARY_ICON - 8.0 - level - 8.0;
+            let row_fits = |t: &str| text_width(&ctx, t, row_font.clone()) <= room;
+            let shown = fit_or_last(
+                vec![
+                    fed_text(lang, &sd, &c, true),
+                    fed_text(lang, &sd, &c, false),
+                ],
+                row_fits,
+            )
+            .unwrap();
+            assert!(row_fits(&shown), "{lang:?} {shown}");
+            // A short kind fits the row as it is.
+            let mut short = c.clone();
+            short.fed = Some(suggest::Fed {
+                champion: 4,
+                kills: 9,
+                deaths: 2,
+                assists: 4,
+                level: 18,
+            });
+            short.foes[0].champion = 4;
+            short.foes[0].heals = false;
+            short.foes[0].kind = suggest::FoeKind::Crit(3);
+            // A short kind fits the overlay line as it is, and the English summary row. The Turkish row
+            // is wider ("3 kritik eşyası"), so there the kind may drop.
+            let full = fed_text(lang, &sd, &short, true);
+            assert!(line_fits(&full), "{lang:?} {full}");
+            if lang == Lang::En {
+                assert!(row_fits(&full), "{lang:?} {full}");
+            }
+        }
+    }
+
+    /// The advice of a death: Zed killed you, and he is 9/2/4 with 85% of his damage gold on AD.
+    fn dead_advice(killers: Vec<i64>) -> Advice {
+        let mut a = game_advice();
+        a.me_dead = true;
+        a.recap = Some(suggest::Recap { killers });
+        if let Some(c) = a.ctx.as_mut() {
+            c.foes = vec![
+                foe(4, (9, 2, 4), 450, 2550),
+                foe(6, (1, 3, 9), 2000, 0),
+                foe(82, (12, 0, 14), 300, 2700),
+                foe(223, (12, 0, 14), 2000, 1000),
+            ];
+        }
+        a
+    }
+
+    #[test]
+    fn the_recap_names_the_killer_with_the_score_and_the_share() {
+        let sd = tip_data();
+        let one = dead_advice(vec![4]);
+        assert_eq!(
+            recap_texts(Lang::En, &sd, &one),
+            [
+                "Killed by Zed · 9/2/4 · 85% AD",
+                "Killed by Zed · 9/2/4",
+                "Killed by Zed"
+            ]
+        );
+        assert_eq!(
+            recap_texts(Lang::Tr, &sd, &one)[0],
+            "Seni Zed öldürdü · 9/2/4 · %85 AD"
+        );
+        // An AP killer reads as AP.
+        let ap = dead_advice(vec![6]);
+        assert_eq!(
+            recap_texts(Lang::En, &sd, &ap)[0],
+            "Killed by Soraka · 1/3/9 · 100% AP"
+        );
+        // A repeat killer: the count from the killer rule, the score, and no share.
+        let mut repeat = dead_advice(vec![4]);
+        repeat.items[0].reason = Reason::VsKiller {
+            champion: 4,
+            times: 3,
+        };
+        assert_eq!(
+            recap_texts(Lang::En, &sd, &repeat),
+            ["Zed killed you 3 times · 9/2/4", "Zed killed you 3 times"]
+        );
+        assert_eq!(
+            recap_texts(Lang::Tr, &sd, &repeat)[0],
+            "Zed seni 3 kez öldürdü · 9/2/4"
+        );
+        // Several enemies scored: the names only.
+        let two = dead_advice(vec![4, 6]);
+        assert_eq!(
+            recap_texts(Lang::En, &sd, &two),
+            ["Killed by Zed and Soraka"]
+        );
+        assert_eq!(
+            recap_texts(Lang::Tr, &sd, &two),
+            ["Seni Zed ve Soraka öldürdü"]
+        );
+        let three = dead_advice(vec![4, 6, 82]);
+        assert_eq!(
+            recap_texts(Lang::En, &sd, &three),
+            ["Killed by Zed, Soraka, Mordekaiser"]
+        );
+        // Alive, no recap, no killer, or a name that Hexsight does not know: no line.
+        let alive = Advice {
+            me_dead: false,
+            ..one.clone()
+        };
+        for a in [
+            alive,
+            Advice {
+                recap: None,
+                ..one.clone()
+            },
+            dead_advice(vec![]),
+            dead_advice(vec![777]),
+        ] {
+            assert!(recap_texts(Lang::En, &sd, &a).is_empty());
+        }
+        // A killer without a foe entry: the name only.
+        let mut bare = dead_advice(vec![4]);
+        bare.ctx = None;
+        assert_eq!(recap_texts(Lang::En, &sd, &bare), ["Killed by Zed"]);
+        // No recap text holds a rate word.
+        for lang in [Lang::En, Lang::Tr] {
+            for t in recap_texts(lang, &sd, &one) {
+                let low = t.to_lowercase();
+                assert!(!low.contains("win") && !low.contains("kazan"), "{t}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_recap_line_fits_312_points_or_falls_back() {
+        let ctx = egui::Context::default();
+        theme::setup(&ctx);
+        let sd = tip_data();
+        let line_font = FontId::new(11.5, semibold());
+        let fits = |t: &str| text_width(&ctx, t, line_font.clone()) <= 312.0;
+        let main_fits = |t: &str| text_width(&ctx, t, recap_font()) <= MAIN_W - 2.0 * MARGIN;
+        for lang in [Lang::En, Lang::Tr] {
+            for killers in [vec![82], vec![223], vec![82, 223], vec![82, 223, 136]] {
+                let mut a = dead_advice(killers.clone());
+                let texts = recap_texts(lang, &sd, &a);
+                let shown = fit_or_last(texts.clone(), fits).unwrap();
+                let main = fit_or_last(texts, main_fits).unwrap();
+                // Three long names are cut with "…": the names are the point of the line.
+                if killers.len() <= 2 {
+                    assert!(fits(&shown), "{lang:?} {shown}");
+                    assert!(main_fits(&main), "{lang:?} {main}");
+                }
+                a.items[0].reason = Reason::VsKiller {
+                    champion: killers[0],
+                    times: 12,
+                };
+                let texts = recap_texts(lang, &sd, &a);
+                let shown = fit_or_last(texts, fits).unwrap();
+                assert!(fits(&shown), "{lang:?} {shown}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_recap_takes_the_place_of_the_context_line_while_dead() {
+        let sd = tip_data();
+        for lang in [Lang::En, Lang::Tr] {
+            let a = dead_advice(vec![4]);
+            let line = recap_texts(lang, &sd, &a)[0].clone();
+            let context = context_line(lang, &sd, a.ctx.as_ref().unwrap()).unwrap();
+            let v = View {
+                sd: Some(sd.clone()),
+                ..waiting_view(Some(a.clone()))
+            };
+            let (texts, size) = overlay_texts(lang, &v);
+            assert!(texts.contains(&line), "{lang:?}: {texts:?}");
+            assert!(!texts.contains(&context), "{lang:?}: {texts:?}");
+            // The card does not grow.
+            let card_h = size.unwrap().y - OVERLAY_TOP - OVERLAY_BOTTOM;
+            assert!(card_h <= 132.0, "{lang:?}: {card_h}");
+            // The main window: the same line above "Next items".
+            let page = page_texts(Settings::default(), lang, &v);
+            let at = |t: &str| page.iter().position(|p| p == t);
+            let header = lang.upper(lang.t(Key::SecNextItems));
+            assert!(
+                at(&line).is_some_and(|i| Some(i) < at(&header)),
+                "{lang:?}: {page:?}"
+            );
+            // After the respawn the line is gone and the context line is back.
+            let alive = View {
+                sd: Some(sd.clone()),
+                ..waiting_view(Some(Advice {
+                    me_dead: false,
+                    ..a.clone()
+                }))
+            };
+            let page = page_texts(Settings::default(), lang, &alive);
+            assert!(!page.contains(&line), "{lang:?}");
+            // The recap alone keeps the overlay card up, with either setting.
+            let only = Advice {
+                items: Vec::new(),
+                ctx: None,
+                ..a.clone()
+            };
+            let s = Settings {
+                suggest_context: false,
+                ..Settings::default()
+            };
+            assert!(overlay_has_content(lang, &sd, &s, &only));
+            let off = Settings {
+                suggest_items: false,
+                suggest_context: false,
+                ..Settings::default()
+            };
+            assert!(!overlay_has_content(lang, &sd, &off, &only));
+        }
+    }
+
+    #[test]
+    fn the_path_takes_the_place_of_the_style_note() {
+        let ctx = egui::Context::default();
+        theme::setup(&ctx);
+        let sd = suggest_data();
+        let mut a = game_advice();
+        assert_eq!(style_notes(Lang::En, &sd, &a), ["AP build"]);
+        a.path = Some(2);
+        a.path_item = Some(6653);
+        assert_eq!(
+            style_notes(Lang::En, &sd, &a),
+            ["On your Liandry's Torment path", "AP build"]
+        );
+        assert_eq!(
+            style_notes(Lang::Tr, &sd, &a),
+            ["Liandry's Torment yolundasın", "AP dizilimi"]
+        );
+        // A path item without a name, or no path, keeps the style.
+        let mut odd = a.clone();
+        odd.path_item = Some(999);
+        assert_eq!(style_notes(Lang::En, &sd, &odd), ["AP build"]);
+        let mut none = a.clone();
+        none.path = None;
+        assert_eq!(style_notes(Lang::En, &sd, &none), ["AP build"]);
+        assert!(
+            style_notes(
+                Lang::En,
+                &sd,
+                &Advice {
+                    no_build: true,
+                    ..a.clone()
+                }
+            )
+            .is_empty()
+        );
+        // The main window shows the path note right after the header, and no style.
+        let v = waiting_view(Some(a.clone()));
+        for lang in [Lang::En, Lang::Tr] {
+            let texts = page_texts(Settings::default(), lang, &v);
+            let path = lang.fmt(Key::SuggestPath, &[&"Liandry's Torment"]);
+            let place = |t: &str| texts.iter().position(|x| x == t);
+            assert_eq!(
+                place(&path).map(|i| i - 1),
+                place(&lang.upper(lang.t(Key::SecNextItems))),
+                "{lang:?}: {texts:?}"
+            );
+            assert!(
+                !texts.contains(&lang.fmt(Key::SuggestStyle, &[&lang.style("ap")])),
+                "{lang:?}"
+            );
+            // A common long name fits beside the header, in both languages.
+            let header = text_width(
+                &ctx,
+                &lang.upper(lang.t(Key::SecNextItems)),
+                FontId::new(11.0, semibold()),
+            );
+            let note = text_width(
+                &ctx,
+                &lang.fmt(Key::SuggestPath, &[&"Rabadon's Deathcap"]),
+                FontId::new(11.0, semibold()),
+            );
+            assert!(header + 8.0 + note <= MAIN_W - 2.0 * MARGIN, "{lang:?}");
+        }
+        // A name too long for the header gives way to the style.
+        let fits = |t: &str| t.len() <= 20;
+        assert_eq!(
+            fit_or_last(style_notes(Lang::En, &sd, &a), fits).as_deref(),
+            Some("AP build")
+        );
+        // The overlay keeps the style.
+        let dead = Advice {
+            me_dead: true,
+            ..a.clone()
+        };
+        let (texts, _) = overlay_texts(Lang::En, &waiting_view(Some(dead)));
+        assert!(texts.contains(&"AP build".to_string()), "{texts:?}");
+        assert!(!texts.iter().any(|t| t.contains("path")), "{texts:?}");
+    }
+
+    #[test]
+    fn the_plan_line_reads_and_hides() {
+        let ctx = egui::Context::default();
+        theme::setup(&ctx);
+        let sd = suggest_data();
+        let mut a = game_advice();
+        assert!(plan_texts(Lang::En, &sd, &a).is_empty());
+        a.plan = vec![3089, 4646];
+        assert_eq!(
+            plan_texts(Lang::En, &sd, &a),
+            [
+                "Then: Rabadon's Deathcap → Stormsurge",
+                "Then: Rabadon's Deathcap"
+            ]
+        );
+        assert_eq!(
+            plan_texts(Lang::Tr, &sd, &a),
+            [
+                "Sonra: Rabadon's Deathcap → Stormsurge",
+                "Sonra: Rabadon's Deathcap"
+            ]
+        );
+        // An item without a name ends the plan there. Full slots and no picks hide it.
+        let mut odd = a.clone();
+        odd.plan = vec![3089, 999];
+        assert_eq!(
+            plan_texts(Lang::En, &sd, &odd),
+            ["Then: Rabadon's Deathcap"]
+        );
+        odd.plan = vec![999, 3089];
+        assert!(plan_texts(Lang::En, &sd, &odd).is_empty());
+        let full = Advice {
+            slots_full: true,
+            ..a.clone()
+        };
+        assert!(plan_texts(Lang::En, &sd, &full).is_empty());
+        // Too wide: one step, then nothing.
+        let fits = |t: &str| t.len() <= 26;
+        assert_eq!(
+            first_fit(plan_texts(Lang::En, &sd, &a), fits).as_deref(),
+            Some("Then: Rabadon's Deathcap")
+        );
+        assert_eq!(first_fit(plan_texts(Lang::En, &sd, &a), |_| false), None);
+        // The card shows the line under the picks; the overlay does not.
+        let v = waiting_view(Some(a.clone()));
+        for lang in [Lang::En, Lang::Tr] {
+            let app = test_app(Settings::default(), lang);
+            let texts = part_texts(&app, |app, ui| app.items_card(ui, &v));
+            let both = lang.fmt(Key::PlanThen, &[&"Rabadon's Deathcap", &"Stormsurge"]);
+            assert_eq!(texts.last(), Some(&both), "{lang:?}: {texts:?}");
+            let dead = Advice {
+                me_dead: true,
+                ..a.clone()
+            };
+            let (overlay, _) = overlay_texts(lang, &waiting_view(Some(dead)));
+            assert!(!overlay.contains(&both), "{lang:?}");
+            // Two short names fit the card in both languages.
+            let w = text_width(&ctx, &both, FontId::proportional(11.5));
+            assert!(w <= CARD_INNER, "{lang:?}: {w:.1}");
+        }
+    }
+
+    #[test]
+    fn the_summary_tooltip_has_your_armor_and_magic_resist() {
+        let mut a = game_advice();
+        assert_eq!(summary_tip(Lang::En, &a), Lang::En.t(Key::CtxTip));
+        a.my_stats = Some((172, 48));
+        assert_eq!(
+            summary_tip(Lang::En, &a),
+            format!(
+                "{}\nYou: 172 armor · 48 magic resist",
+                Lang::En.t(Key::CtxTip)
+            )
+        );
+        assert!(summary_tip(Lang::Tr, &a).ends_with("\nSen: 172 zırh · 48 büyü direnci"));
     }
 
     /// An app that paints the overlay, with the advice for these items and a player who is dead (the card shows).
