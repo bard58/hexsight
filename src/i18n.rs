@@ -151,6 +151,11 @@ table! {
     FooterSource = "{0} · patch {1}", "{0} · {1} yaması";
     // The left text of the footer. The name of the data source is in its tooltip.
     FooterPatch = "Patch {0}", "{0} yaması";
+    // The left text of the footer when the version of the data has a date. {0} is the patch,
+    // {1} the day of the data: "Today", "Yesterday", or a date such as "Oct 25" ("25 Eki").
+    FooterPatchData = "Patch {0} · Data: {1}", "{0} yaması · Veri: {1}";
+    DataToday = "Today", "Bugün";
+    DataYesterday = "Yesterday", "Dün";
     LoadingData = "Loading data…", "Veriler yükleniyor…";
     ReloadData = "Download the data again", "Verileri yeniden indir";
     NoDataChampion = "No data for this champion", "Bu şampiyon için veri yok";
@@ -1216,6 +1221,14 @@ mod tests {
         assert_eq!(Lang::Tr.fmt(Key::GamesLast10Score, &[&7, &3]), "7G 3M");
         assert_eq!(Lang::Tr.fmt(Key::FooterPatch, &[&"16.21"]), "16.21 yaması");
         assert_eq!(Lang::En.fmt(Key::FooterPatch, &[&"16.21"]), "Patch 16.21");
+        assert_eq!(
+            Lang::Tr.fmt(Key::FooterPatchData, &[&"16.22", &"25 Eki"]),
+            "16.22 yaması · Veri: 25 Eki"
+        );
+        assert_eq!(
+            Lang::En.fmt(Key::FooterPatchData, &[&"16.22", &"Oct 25"]),
+            "Patch 16.22 · Data: Oct 25"
+        );
         // Only a low sample gets a word, and the word says what is missing, not that the card is weak.
         assert_eq!(
             (Lang::En.t(Key::ConfLow), Lang::Tr.t(Key::ConfLow)),
