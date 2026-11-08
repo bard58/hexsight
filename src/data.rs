@@ -444,10 +444,41 @@ fn ids(v: &Value) -> Vec<i64> {
     arr(v).filter_map(|x| x["id"].as_i64()).collect()
 }
 
-/// Ids of a ranked list whose rows hold `item.id` (the boots and the later items).
-fn ranked_ids(v: &Value) -> Vec<i64> {
-    arr(v).filter_map(|x| x["item"]["id"].as_i64()).collect()
+/// The pick rate of a row. A row without one sorts after the rows that have one.
+fn pick(v: &Value) -> f64 {
+    v["pickRate"].as_f64().unwrap_or(-1.0)
 }
+
+/// True when a row has `min` games or more. A row without a count passes.
+fn enough(v: &Value, min: u32) -> bool {
+    v["sampleCount"]
+        .as_u64()
+        .is_none_or(|n| n >= u64::from(min))
+}
+
+/// The rows of a list, most picked first. The source ranks by win rate, so a rare row can
+/// come first there. Rows without a pick rate keep the source order.
+fn by_pick(v: &Value) -> Vec<&Value> {
+    let mut rows: Vec<&Value> = arr(v).collect();
+    rows.sort_by(|a, b| pick(b).total_cmp(&pick(a)));
+    rows
+}
+
+/// The ids and pick rates of a ranked list whose rows hold `item.id` (the boots and the
+/// later items), most picked first. A row under `ITEM_MIN_GAMES` is left out.
+fn ranked_ids(v: &Value) -> Vec<(i64, f64)> {
+    by_pick(v)
+        .into_iter()
+        .filter(|x| enough(x, ITEM_MIN_GAMES))
+        .filter_map(|x| Some((x["item"]["id"].as_i64()?, pick(x))))
+        .collect()
+}
+
+/// The fewest games behind a profile that can give the core build.
+const PROFILE_MIN_GAMES: u32 = 1000;
+
+/// The share of players who buy no boots before the build says that most skip them.
+const NO_BOOTS_SHARE: f64 = 0.5;
 
 /// True when two item lists hold the same items, whatever the order.
 fn same_items(a: &[i64], b: &[i64]) -> bool {
@@ -608,11 +639,21 @@ pub fn kit_champion(d: &Value) -> ChampStats {
         s.sort_by(|a, b| key(a).cmp(&key(b)).then(b.win_rate.total_cmp(&a.win_rate)));
     }
     let skills = kit_skills(&d["skills"]);
-    for a in arr(&d["builds"]["filtered"]["archetypes"]).take(3) {
-        let Some(p) = arr(&a["profiles"]).next() else {
+    // The three most played styles. In a style, the most played profile with enough games
+    // gives the core, and its most played route gives the buying order.
+    for a in by_pick(&d["builds"]["filtered"]["archetypes"])
+        .into_iter()
+        .take(3)
+    {
+        let profiles = by_pick(&a["profiles"]);
+        let Some(&p) = profiles
+            .iter()
+            .find(|p| enough(p, PROFILE_MIN_GAMES))
+            .or(profiles.first())
+        else {
             continue;
         };
-        let route = arr(&p["routes"]).next();
+        let route = by_pick(&p["routes"]).first().copied();
         let core = route
             .map(|r| ids(&r["purchaseOrder"]))
             .unwrap_or_else(|| ids(&p["itemSet"]));
@@ -631,9 +672,10 @@ pub fn kit_champion(d: &Value) -> ChampStats {
         let later = route
             .map(|r| ranked_ids(&r["laterItems"]))
             .unwrap_or_default();
-        // The core items of the other profiles, in profile order, for the block "Situational".
-        let situational = arr(&a["profiles"])
-            .skip(1)
+        // The core items of the other profiles, most played first, for the block "Situational".
+        let situational = profiles
+            .iter()
+            .filter(|o| !std::ptr::eq(**o, p))
             .take(4)
             .flat_map(|o| ids(&o["itemSet"]))
             .filter(|id| !core.contains(id))
@@ -644,13 +686,21 @@ pub fn kit_champion(d: &Value) -> ChampStats {
             starters,
             win_rate: f(&p["winRate"]),
             starters_alt,
-            boots_skipped: boots_ranked.first() == Some(&0),
+            boots_skipped: boots_ranked
+                .first()
+                .is_some_and(|&(id, rate)| id == 0 && rate >= NO_BOOTS_SHARE),
             boots: boots_ranked
                 .into_iter()
+                .map(|r| r.0)
                 .filter(|&id| id > 0)
                 .take(5)
                 .collect(),
-            later: later.into_iter().filter(|&id| id > 0).take(12).collect(),
+            later: later
+                .into_iter()
+                .map(|r| r.0)
+                .filter(|&id| id > 0)
+                .take(12)
+                .collect(),
             situational,
             consumables: consumables(&sets),
             skills: skills.clone(),
@@ -770,6 +820,138 @@ mod tests {
             kit_skills(&serde_json::json!([{ "order": "R>Q>W>E" }])),
             "R>Q>W>E"
         );
+    }
+
+    /// The real Heimerdinger file (aramkit, patch 16.21). The source ranks profiles, routes,
+    /// later items and boots by win rate, so its first profile is a rare one (4.5% of games).
+    #[test]
+    fn the_real_heimerdinger_build_is_the_most_played_one() {
+        let d: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/heimerdinger-builds.json"))
+                .unwrap();
+        let b = &kit_champion(&d).builds[0];
+        // The mainstream profile (half the games) in the order of its most played route.
+        assert_eq!(b.items, vec![2503, 6653, 3116]);
+        // Later items by pick rate: Rabadon, Zhonya, Shadowflame. Malignance comes after them.
+        assert_eq!(b.later[..3], [3089, 3157, 4645]);
+        let at = |id| b.later.iter().position(|&x| x == id).unwrap();
+        assert!(at(3118) > at(4645));
+        // A row with 54 games is noise, even with the best win rate of the list.
+        assert!(!b.later.contains(&3031));
+        // "No boots" is the top row with 46%, which is not most players.
+        assert!(!b.boots_skipped);
+        assert_eq!(b.boots[..2], [3020, 3008]);
+        // The other profiles, most played first, without the core items.
+        assert_eq!(b.situational, vec![4645, 3118, 3089, 3157]);
+    }
+
+    fn one_build(archetypes: &str) -> Build {
+        let d: Value = serde_json::from_str(&format!(
+            r#"{{"builds":{{"filtered":{{"archetypes":{archetypes}}}}}}}"#
+        ))
+        .unwrap();
+        kit_champion(&d).builds.remove(0)
+    }
+
+    #[test]
+    fn the_most_played_styles_come_first() {
+        let d: Value = serde_json::from_str(
+            r#"{"builds":{"filtered":{"archetypes":[
+              {"key":"a","pickRate":0.05,"profiles":[{"itemSet":[{"id":1}]}]},
+              {"key":"b","pickRate":0.6,"profiles":[{"itemSet":[{"id":2}]}]},
+              {"key":"c","pickRate":0.1,"profiles":[{"itemSet":[{"id":3}]}]},
+              {"key":"d","pickRate":0.2,"profiles":[{"itemSet":[{"id":4}]}]}]}}}"#,
+        )
+        .unwrap();
+        let names: Vec<String> = kit_champion(&d)
+            .builds
+            .into_iter()
+            .map(|b| b.name)
+            .collect();
+        assert_eq!(names, ["b", "d", "c"]);
+        // Without pick rates, the source order stays.
+        let d: Value = serde_json::from_str(
+            r#"{"builds":{"filtered":{"archetypes":[
+              {"key":"a","profiles":[{"itemSet":[{"id":1}]}]},
+              {"key":"b","profiles":[{"itemSet":[{"id":2}]}]},
+              {"key":"c","profiles":[{"itemSet":[{"id":3}]}]},
+              {"key":"d","profiles":[{"itemSet":[{"id":4}]}]}]}}}"#,
+        )
+        .unwrap();
+        let names: Vec<String> = kit_champion(&d)
+            .builds
+            .into_iter()
+            .map(|b| b.name)
+            .collect();
+        assert_eq!(names, ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn the_core_is_the_most_played_profile_with_enough_games() {
+        // The most picked profile has too few games. The next one gives the core.
+        let b = one_build(
+            r#"[{"key":"ap","profiles":[
+              {"sampleCount":5000,"pickRate":0.1,"itemSet":[{"id":1}]},
+              {"sampleCount":900,"pickRate":0.7,"itemSet":[{"id":2}]},
+              {"sampleCount":40000,"pickRate":0.5,"itemSet":[{"id":3}]}]}]"#,
+        );
+        assert_eq!(b.items, vec![3]);
+        // The other profiles by pick rate, for the block "Situational".
+        assert_eq!(b.situational, vec![2, 1]);
+        // No profile has enough games: the most picked one.
+        let b = one_build(
+            r#"[{"key":"ap","profiles":[
+              {"sampleCount":50,"pickRate":0.1,"itemSet":[{"id":1}]},
+              {"sampleCount":90,"pickRate":0.7,"itemSet":[{"id":2}]}]}]"#,
+        );
+        assert_eq!(b.items, vec![2]);
+        // No counts and no rates: the first profile, as the source gives it.
+        let b = one_build(
+            r#"[{"key":"ap","profiles":[{"itemSet":[{"id":1}]},{"itemSet":[{"id":2}]}]}]"#,
+        );
+        assert_eq!(b.items, vec![1]);
+        assert_eq!(b.situational, vec![2]);
+    }
+
+    #[test]
+    fn the_buying_order_is_the_most_played_route() {
+        let b = one_build(
+            r#"[{"key":"ap","profiles":[{"itemSet":[{"id":1},{"id":2}],"routes":[
+              {"pickRate":0.2,"purchaseOrder":[{"id":2},{"id":1}]},
+              {"pickRate":0.8,"purchaseOrder":[{"id":1},{"id":2}]}]}]}]"#,
+        );
+        assert_eq!(b.items, vec![1, 2]);
+        let b = one_build(
+            r#"[{"key":"ap","profiles":[{"itemSet":[{"id":1},{"id":2}],"routes":[
+              {"purchaseOrder":[{"id":2},{"id":1}]},{"purchaseOrder":[{"id":1},{"id":2}]}]}]}]"#,
+        );
+        assert_eq!(b.items, vec![2, 1]);
+    }
+
+    #[test]
+    fn later_items_and_boots_go_by_pick_rate_above_a_sample_floor() {
+        let b = one_build(
+            r#"[{"key":"ap","profiles":[{"itemSet":[{"id":1}],"routes":[{"purchaseOrder":[{"id":1}],
+              "boots":[{"sampleCount":200,"pickRate":0.05,"item":{"id":3009}},
+                       {"sampleCount":4000,"pickRate":0.45,"item":{"id":0}},
+                       {"sampleCount":3000,"pickRate":0.4,"item":{"id":3020}}],
+              "laterItems":[{"sampleCount":60,"pickRate":0.01,"item":{"id":5}},
+                            {"sampleCount":900,"pickRate":0.1,"item":{"id":6}},
+                            {"sampleCount":5000,"pickRate":0.4,"item":{"id":7}}]}]}]}]"#,
+        );
+        // Rows under the floor are left out (3009 and 5), the rest go by pick rate.
+        assert_eq!(b.later, vec![7, 6]);
+        assert_eq!(b.boots, vec![3020]);
+        // "No boots" is the top row, but under half the players: the boots stay.
+        assert!(!b.boots_skipped);
+        let b = one_build(
+            r#"[{"key":"ap","profiles":[{"itemSet":[{"id":1}],"routes":[{"purchaseOrder":[{"id":1}],
+              "boots":[{"sampleCount":3000,"pickRate":0.4,"item":{"id":3020}},
+                       {"sampleCount":6000,"pickRate":0.55,"item":{"id":0}}]}]}]}]"#,
+        );
+        // Half the players or more buy no boots, and that row is the top one.
+        assert!(b.boots_skipped);
+        assert_eq!(b.boots, vec![3020]);
     }
 
     /// The key `summoners` of a champion file, in the shape of the source (Heimerdinger, patch 16.21).

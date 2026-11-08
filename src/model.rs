@@ -45,11 +45,12 @@ pub struct Build {
     pub win_rate: f32,
     /// The next starting set that differs from the top one. Empty when none.
     pub starters_alt: Vec<i64>,
-    /// Real boots, best first. The "no boots" choice (id 0) is not in the list.
+    /// Real boots, most picked first. The "no boots" choice (id 0) is not in the list.
     pub boots: Vec<i64>,
-    /// True when most players of this build buy no boots (the data ranks "none" first).
+    /// True when most players of this build buy no boots: the "none" row is the most
+    /// picked row and holds half the players or more.
     pub boots_skipped: bool,
-    /// Items bought after the core, best first.
+    /// Items bought after the core, most picked first.
     pub later: Vec<i64>,
     /// Core items of the other builds of the same style, for a different game.
     pub situational: Vec<i64>,
