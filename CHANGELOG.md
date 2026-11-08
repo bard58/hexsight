@@ -4,9 +4,15 @@ All notable changes to this project are in this file. The format follows [Keep a
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-11-09
+
 ### Added
 
-- One-click update. When a newer version exists, the footer and the Settings page show "Update now". A click downloads the new exe from the GitHub release, checks its SHA-256 hash against the `.sha256` file of the release, replaces the exe, and restarts Hexsight. It never runs in a game or in champ select, and it needs no installer. The installed copy and the portable copy both use it. When a step fails, the old exe stays, and the window shows the reason with a link to the download page. With "Check for new versions" off, Hexsight sends no request at all.
+- The "Update now" button in the footer and in Settings. It downloads the release exe from GitHub, checks its SHA-256 hash and size, swaps it in, and restarts Hexsight. If the new copy does not start, the old exe comes back. The button is off in champ select and in game. With "Check for new versions" off, Hexsight sends no request. A folder that Hexsight cannot write to shows the download page link instead.
+
+### Note
+
+- This version still needs a manual download. The button works from 0.1.5 on, for the next update.
 
 ## [0.1.4] - 2026-11-08
 
