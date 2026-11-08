@@ -2278,13 +2278,17 @@ fn more_badge(face: Rect, text: Vec2) -> Rect {
     )
 }
 
-/// How many times the killer of the recap killed you: the count of the killer rule on an item, else one.
+/// How many times the killer of the recap killed you: the count of `Advice::killer` when it is that
+/// champion, else the count of the killer rule on an item, else one.
 fn killer_times(a: &Advice, champion: i64) -> u8 {
-    a.items
-        .iter()
-        .find_map(|p| match p.reason {
-            Reason::VsKiller { champion: c, times } if c == champion => Some(times),
-            _ => None,
+    a.killer
+        .filter(|k| k.champion == champion)
+        .map(|k| k.times)
+        .or_else(|| {
+            a.items.iter().find_map(|p| match p.reason {
+                Reason::VsKiller { champion: c, times } if c == champion => Some(times),
+                _ => None,
+            })
         })
         .unwrap_or(1)
 }
@@ -13754,6 +13758,49 @@ mod tests {
     }
 
     #[test]
+    fn the_repeat_count_comes_from_the_killer_of_the_advice_when_no_item_has_the_killer_rule() {
+        let sd = tip_data();
+        // Zed killed you 3 times, and no pick carries `VsKiller` (a mixed killer, or no resist room).
+        let mut a = dead_advice(vec![4]);
+        a.killer = Some(suggest::Killer {
+            champion: 4,
+            times: 3,
+        });
+        assert!(
+            !a.items
+                .iter()
+                .any(|p| matches!(p.reason, Reason::VsKiller { .. }))
+        );
+        assert_eq!(killer_times(&a, 4), 3);
+        assert_eq!(
+            recap_texts(Lang::En, &sd, &a),
+            ["Zed killed you 3 times · 9/2/4", "Zed killed you 3 times"]
+        );
+        assert_eq!(
+            recap_texts(Lang::Tr, &sd, &a)[0],
+            "Zed seni 3 kez öldürdü · 9/2/4"
+        );
+        // The killer of the advice wins over a stale count on an item.
+        a.items[0].reason = Reason::VsKiller {
+            champion: 4,
+            times: 2,
+        };
+        assert_eq!(killer_times(&a, 4), 3);
+        // A nemesis that is not the killer of this death gives no count to it.
+        a.killer = Some(suggest::Killer {
+            champion: 6,
+            times: 4,
+        });
+        assert_eq!(killer_times(&a, 4), 2);
+        a.items[0].reason = Reason::Core(1);
+        assert_eq!(killer_times(&a, 4), 1);
+        assert_eq!(
+            recap_texts(Lang::En, &sd, &a)[0],
+            "Killed by Zed · 9/2/4 · 85% AD"
+        );
+    }
+
+    #[test]
     fn the_recap_names_the_killer_with_the_score_and_the_share() {
         let sd = tip_data();
         let one = dead_advice(vec![4]);
@@ -14216,6 +14263,119 @@ mod tests {
                 with_full.iter().any(|t| t.contains("Blackfire")),
                 "{lang:?}"
             );
+        }
+    }
+
+    /// The advice of the end-to-end games of `suggest::testkit` (the real Heimerdinger data, real
+    /// rosters through `context`, the recap tracker and `advise`), and the static data with their
+    /// champion and item names.
+    fn e2e_games() -> (Arc<StaticData>, Advice, Advice) {
+        use crate::suggest::testkit;
+        let (_, _, death) = testkit::death_game();
+        (Arc::new(testkit::sd()), testkit::fed_mage_game(), death)
+    }
+
+    #[test]
+    fn the_end_to_end_rule_reasons_fit_the_item_row_and_the_overlay_cell_in_both_languages() {
+        let ctx = egui::Context::default();
+        theme::setup(&ctx);
+        let (sd, fed, death) = e2e_games();
+        let row = CARD_INNER - ITEM_ICON - 8.0 - ITEM_CHIP_W;
+        let cell = advice_cell_w(OVERLAY_STRIP_W - 28.0) - 10.0;
+        let reason = |a: &Advice, f: fn(Reason) -> bool| {
+            a.items
+                .iter()
+                .map(|p| p.reason)
+                .find(|&r| f(r))
+                .unwrap_or_else(|| panic!("no such reason in {:?}", a.items))
+        };
+        let vs_fed = reason(&fed, |r| matches!(r, Reason::VsFed { .. }));
+        let vs_killer = reason(&death, |r| matches!(r, Reason::VsKiller { .. }));
+        let expect = [
+            (vs_fed, Lang::En, "vs fed Syndra (9/1)", "Syndra 9/1"),
+            (vs_fed, Lang::Tr, "Fed rakip: Syndra (9/1)", "Syndra 9/1"),
+            (
+                vs_killer,
+                Lang::En,
+                "Caitlyn killed you 3 times",
+                "vs your killer",
+            ),
+            (
+                vs_killer,
+                Lang::Tr,
+                "Caitlyn seni 3 kez öldürdü",
+                // The spec had "seni öldürene karşı", which is too wide for a cell (see i18n.rs).
+                "katiline karşı",
+            ),
+        ];
+        for (r, lang, long, short) in expect {
+            let text = reason_text(lang, &sd, r);
+            assert_eq!(text, long);
+            let w = text_width(&ctx, &text, FontId::proportional(11.5));
+            assert!(w <= row, "{lang:?} {text:?} needs {w:.1} points of {row}");
+            let text = cell_reason_text(lang, &sd, r);
+            assert_eq!(text, short);
+            let w = text_width(&ctx, &text, advice_reason_font());
+            assert!(
+                w <= cell,
+                "{lang:?} {text:?} needs {w:.1} points of {cell:.1}"
+            );
+        }
+        // The recap line of the death names Caitlyn with the count of the tracker.
+        assert_eq!(
+            recap_texts(Lang::En, &sd, &death)[0],
+            "Caitlyn killed you 3 times · 5/1/0"
+        );
+        assert_eq!(
+            recap_texts(Lang::Tr, &sd, &death)[0],
+            "Caitlyn seni 3 kez öldürdü · 5/1/0"
+        );
+    }
+
+    #[test]
+    fn the_overlay_card_of_the_end_to_end_games_stays_340_wide_and_at_most_132_high() {
+        let (sd, fed, death) = e2e_games();
+        // Dead, so the full card shows (alive, it shows only for a while after a change). The fed
+        // game has no recap, the death game has one: its line replaces the context line.
+        for a in [
+            Advice {
+                me_dead: true,
+                ..fed
+            },
+            death,
+        ] {
+            let v = View {
+                sd: Some(sd.clone()),
+                ..waiting_view(Some(a.clone()))
+            };
+            for lang in [Lang::En, Lang::Tr] {
+                let (texts, size) = overlay_texts(lang, &v);
+                let size = size.expect("the overlay sized itself");
+                assert_eq!(size.x, OVERLAY_WINDOW_W, "{lang:?}");
+                let card_h = size.y - OVERLAY_TOP - OVERLAY_BOTTOM;
+                assert!(card_h <= 132.0, "{lang:?}: {card_h} points high");
+                // Each pick has its name and its cell reason on the card.
+                for p in &a.items {
+                    let name = &sd.items[&p.id].name;
+                    assert!(
+                        texts.iter().any(|t| t.contains(name.as_str())),
+                        "{lang:?}: {name} is missing in {texts:?}"
+                    );
+                    let why = cell_reason_text(lang, &sd, p.reason);
+                    assert!(
+                        texts.contains(&why),
+                        "{lang:?}: {why:?} is missing in {texts:?}"
+                    );
+                }
+                // While dead with a recap, one of the recap texts is the context line.
+                let recap = recap_texts(lang, &sd, &a);
+                if !recap.is_empty() {
+                    assert!(
+                        recap.iter().any(|t| texts.contains(t)),
+                        "{lang:?}: no recap line in {texts:?}"
+                    );
+                }
+            }
         }
     }
 

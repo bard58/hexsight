@@ -179,3 +179,79 @@ pub(crate) fn ctx(ap_pct: Option<u8>, healers: usize, tanks: usize) -> GameConte
         ..Default::default()
     }
 }
+
+// ---------------------------------------------------------------------------
+// End-to-end games: a roster goes through `context`, the recap `Tracker` and `advise`, as in the
+// worker. The integration tests of `suggest` and `app` read the advice of these games.
+
+/// Syndra, the fed AP mage of `fed_mage_game`.
+pub(crate) const E2E_SYNDRA: i64 = 134;
+/// Caitlyn, the killer of `death_game`.
+pub(crate) const E2E_CAITLYN: i64 = 51;
+
+/// You: Heimerdinger with Blackfire Torch, against five known enemies. Syndra is fed at 9/1/0 with
+/// Rabadon's Deathcap and Shadowflame; the others have small scores.
+pub(crate) fn fed_mage_roster() -> Roster {
+    let mut players = vec![me(&[2503])];
+    players.extend([
+        scored_enemy(E2E_SYNDRA, &[3089, 4645], 9, 1, 0),
+        scored_enemy(E2E_CAITLYN, &[3031], 1, 3, 2),
+        scored_enemy(32, &[], 0, 2, 4),
+        scored_enemy(266, &[], 2, 2, 1),
+        scored_enemy(111, &[], 0, 1, 6),
+    ]);
+    Roster { players, me: 0 }
+}
+
+/// The advice of `fed_mage_roster` with these Heimerdinger stats, as the worker makes it (no share
+/// of the enemies' own data, no gold, no live stats).
+pub(crate) fn fed_mage_advice(details: &ChampStats) -> Advice {
+    let (sd, r) = (sd(), fed_mage_roster());
+    let summary = context(&r, &sd, &HashMap::new());
+    let mut i = input(r.me(), details, &sd);
+    i.ctx = Some(&summary);
+    advise(&i)
+}
+
+/// A real Heimerdinger game with a fed AP mage (`fed_mage_roster`).
+pub(crate) fn fed_mage_game() -> Advice {
+    fed_mage_advice(&heimer())
+}
+
+/// You die three times to Caitlyn (three crit items, so a clear AD foe): each time an alive roster,
+/// then a dead one with your deaths one up and only Caitlyn's kills one up, 2 seconds apart. The
+/// rosters go through the recap `Tracker` as in the worker, and the advice of the last dead roster
+/// is made with its `killer` and `recap`. Returns the last dead roster, the tracker and the advice.
+pub(crate) fn death_game() -> (Roster, recap::Tracker, Advice) {
+    let (sd, d) = (sd(), heimer());
+    let mut alive = roster(vec![
+        scored_enemy(E2E_CAITLYN, &[3031, 3036, 3046], 2, 1, 0),
+        scored_enemy(E2E_SYNDRA, &[3089], 1, 1, 1),
+        scored_enemy(32, &[], 0, 1, 3),
+        scored_enemy(266, &[], 1, 0, 1),
+        scored_enemy(111, &[], 0, 0, 2),
+    ]);
+    alive.players[0].items = vec![2503];
+    let mut t = recap::Tracker::default();
+    let t0 = std::time::Instant::now();
+    let mut dead = alive.clone();
+    for n in 0..3u64 {
+        let at = t0 + std::time::Duration::from_secs(20 * n);
+        t.observe(&alive, at);
+        dead = alive.clone();
+        dead.players[0].dead = true;
+        dead.players[0].deaths += 1;
+        dead.players[1].kills += 1;
+        t.observe(&dead, at + std::time::Duration::from_secs(2));
+        // Respawn: alive again with the new score.
+        alive = dead.clone();
+        alive.players[0].dead = false;
+    }
+    let summary = context(&dead, &sd, &HashMap::new());
+    let mut i = input(dead.me(), &d, &sd);
+    i.ctx = Some(&summary);
+    i.killer = t.killer();
+    i.recap = t.recap();
+    let a = advise(&i);
+    (dead, t, a)
+}

@@ -86,9 +86,7 @@ const MAX_RULE_TAGS: u8 = 6;
 /// At most this many items that a rule adds (injects) in one pass. Order: killer, fed, healer, mix.
 const MAX_INJECTS: usize = 2;
 /// The priority of a rule reason on a tie of points: the lower one wins.
-#[allow(dead_code)] // F0: package A uses it in `threat::triggers`.
 const PRIO_KILLER: u8 = 0;
-#[allow(dead_code)] // F0: package A uses it in `threat::triggers`.
 const PRIO_FED: u8 = 1;
 const PRIO_ANTI_HEAL: u8 = 2;
 const PRIO_PEN: u8 = 3;
@@ -285,7 +283,6 @@ pub struct Fed {
 /// The build kind of an enemy, with the count of its items of that kind (2 or more).
 /// `threat::foe_kind` decides it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[allow(dead_code)] // F0: package A builds the kinds in `threat::foe_kind`.
 pub enum FoeKind {
     #[default]
     None,
@@ -298,7 +295,6 @@ pub enum FoeKind {
 
 /// One known enemy: its score line, its items in short, and its build kind. It holds no name.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[allow(dead_code)] // F0: packages A and D read the fields.
 pub struct Foe {
     pub champion: i64,
     pub kills: u16,
@@ -558,14 +554,12 @@ pub enum Reason {
         known: bool,
     },
     /// Against the fed enemy: its champion and its kills and deaths.
-    #[allow(dead_code)] // F0: package A gives it in `threat::triggers`.
     VsFed {
         champion: i64,
         kills: u8,
         deaths: u8,
     },
     /// Against the enemy that killed you, and how many times it did.
-    #[allow(dead_code)] // F0: package A gives it in `threat::triggers`.
     VsKiller {
         champion: i64,
         times: u8,
@@ -639,6 +633,9 @@ pub struct Advice {
     pub fed_rule: Option<i64>,
     /// The recap of your current death (`Input::recap`).
     pub recap: Option<Recap>,
+    /// The enemy that killed you, now or as the nemesis, with its count (`Input::killer`). The recap
+    /// line reads the count here, also when no pick carries `Reason::VsKiller`.
+    pub killer: Option<Killer>,
     /// Your own armor and magic resist, rounded, when the Live Client gave both.
     pub my_stats: Option<(u16, u16)>,
     /// The team rules that fired. The worker passes it back as `Input::prev_rules`.
@@ -677,15 +674,12 @@ pub struct Input<'a> {
     /// Your own armor, magic resist and health, from `activeplayer`.
     pub stats: Option<MyStats>,
     /// The enemy that killed you (now, or as the nemesis), for the killer rule.
-    #[allow(dead_code)] // F0: package A reads it in `threat::triggers`.
     pub killer: Option<Killer>,
     /// The recap of your current death. `advise` copies it into `Advice::recap`.
     pub recap: Option<&'a Recap>,
     /// `Advice::path` of the last pass, for the hysteresis of the path tracker.
-    #[allow(dead_code)] // F0: package C reads it in `path::data_cands`.
     pub prev_path: Option<u16>,
     /// `Advice::fed_rule` of the last pass, so a fed enemy that dies once keeps the rule.
-    #[allow(dead_code)] // F0: package A reads it in `threat::triggers`.
     pub prev_fed: Option<i64>,
     /// `Advice::rules` of the last pass, for the hysteresis of the team rules.
     pub prev_rules: Option<RuleState>,
@@ -862,7 +856,6 @@ fn resist_bonus(resist: i32, owned: usize, have: Option<f32>) -> i32 {
 /// inject list for your class (the first item that the shop sells comes in), and the priority of its
 /// reason on a tie. The points are the bonus of the bit in `Pass` (`Pass::bonus`). The first trigger
 /// that adds an item for a bit is the only one for that bit.
-#[allow(dead_code)] // F0: package A builds triggers in `threat::triggers`.
 struct Trigger {
     bit: u16,
     reason: Reason,
@@ -872,7 +865,6 @@ struct Trigger {
 
 /// The points that a rule gives to one candidate. `resist` hits of one item combine with `max()`,
 /// the other hits add up. On a tie of points, the lower `priority` gives the reason.
-#[allow(dead_code)] // F0: package A builds extra hits in `threat::hits`.
 struct Hit {
     points: i32,
     priority: u8,
@@ -881,7 +873,6 @@ struct Hit {
 }
 
 /// What one pass of `rank` knows before its candidates. The hooks of the child modules read it.
-#[allow(dead_code)] // F0: the hooks of packages A and C read the fields.
 struct Pass<'a> {
     input: &'a Input<'a>,
     /// The build that fits your items, and its index in `details.builds` (the style).
@@ -892,11 +883,14 @@ struct Pass<'a> {
     /// Your items with their earlier forms (`with_earlier_forms`).
     held: Vec<i64>,
     /// How many finished non-boots items you own, and whether you own a finished pair of boots.
+    #[allow(dead_code)] // For the hooks: no hook reads it yet, `rank` uses its own copy.
     finished: usize,
+    #[allow(dead_code)] // For the hooks: no hook reads it yet, `rank` uses its own copy.
     owns_boots: bool,
     /// The bonus of each resist bit, after `shrink` and `stats::factor`.
     mr_bonus: i32,
     armor_bonus: i32,
+    #[allow(dead_code)] // For the hooks: no hook reads it yet, `rank` uses its own copy.
     rules: Rules,
 }
 
@@ -1354,6 +1348,7 @@ pub fn advise(input: &Input) -> Advice {
         me_dead: input.me.dead,
         has_gold: input.gold.is_some(),
         recap: input.recap.cloned(),
+        killer: input.killer,
         my_stats: input.stats.and_then(|s| {
             Some((
                 s.armor?.round().max(0.0) as u16,
@@ -3004,6 +2999,8 @@ mod tests {
             plan: _,
             fed_rule: _,
             recap: _,
+            // A champion id and a count of your deaths.
+            killer: _,
             my_stats: _,
             rules: _,
         } = a;
@@ -3151,7 +3148,7 @@ mod tests {
     }
 
     #[test]
-    fn foes_follow_the_roster_and_kind_is_none_in_the_stub() {
+    fn foes_follow_the_roster_with_their_kind() {
         let sd = sd();
         let r = roster(vec![
             Player {
@@ -3184,9 +3181,11 @@ mod tests {
         assert!(cait.ad_gold > cait.ap_gold);
         // Rabadon's Deathcap is finished, a Needlessly Large Rod is not.
         assert_eq!(c.foes[0].finished, 1);
-        // Soraka heals, Caitlyn does not. The stub gives no kind.
+        // Soraka heals, Caitlyn does not.
         assert!(c.foes[1].heals && !cait.heals);
-        assert!(c.foes.iter().all(|f| f.kind == FoeKind::None));
+        // Caitlyn has two crit items; the others have fewer than two of a kind.
+        assert_eq!(cait.kind, FoeKind::Crit(2));
+        assert!(c.foes[..2].iter().all(|f| f.kind == FoeKind::None));
     }
 
     #[test]
@@ -3213,11 +3212,10 @@ mod tests {
             i.ctx = Some(&team);
             let a = advise(&i);
             assert_eq!(
-                (a.path, a.path_item, a.fed_rule, a.recap.clone(), a.my_stats),
-                (None, None, None, None, None),
+                (a.fed_rule, a.recap.clone(), a.my_stats),
+                (None, None, None),
                 "{owned:?}"
             );
-            assert!(a.plan.is_empty(), "{owned:?}");
             // The rules that fired are in the advice.
             assert_eq!(
                 a.rules,
@@ -3228,9 +3226,10 @@ mod tests {
                     healers: true
                 }
             );
-            // The previous state, stats with no field and the previous path change nothing yet.
+            // The previous state, stats with no field, an unknown fed enemy and the path of this
+            // pass passed back (as the worker does) change nothing.
             i.prev_rules = Some(RuleState::default());
-            i.prev_path = Some(3);
+            i.prev_path = a.path;
             i.prev_fed = Some(4);
             i.stats = Some(MyStats::default());
             assert_eq!(advise(&i), a, "{owned:?}");
@@ -3312,5 +3311,154 @@ mod tests {
         assert_eq!(score_of(&r, 3102), Some(RESIST_BASE + RESIST_CARRY));
         assert_eq!(reason_of(&r, 3102), Some(Reason::VsAp(80)));
         assert_eq!(MAX_INJECTS, 2);
+    }
+}
+
+/// The packages together: a roster goes through `context`, the recap tracker, the threat rules,
+/// the path tracker and the plan in one `advise`, as in the worker.
+#[cfg(test)]
+mod integration {
+    use super::testkit::*;
+    use super::*;
+
+    fn has_bit(sd: &StaticData, id: i64, bit: u16) -> bool {
+        sd.item_info.get(&id).is_some_and(|i| i.cats & bit != 0)
+    }
+
+    #[test]
+    fn a_heimerdinger_game_with_a_fed_ap_mage_gives_vs_fed_magic_resist_a_path_and_a_plan() {
+        let sd = sd();
+        let a = fed_mage_game();
+        // The fed rule fired on Syndra, and a pick carries it on a magic resist item.
+        assert_eq!(a.fed_rule, Some(E2E_SYNDRA), "{a:?}");
+        let fed = a
+            .items
+            .iter()
+            .find(|p| matches!(p.reason, Reason::VsFed { champion, .. } if champion == E2E_SYNDRA))
+            .unwrap_or_else(|| panic!("no VsFed pick in {:?}", a.items));
+        assert!(has_bit(&sd, fed.id, cat::MR), "{fed:?}");
+        assert_eq!(
+            fed.reason,
+            Reason::VsFed {
+                champion: E2E_SYNDRA,
+                kills: 9,
+                deaths: 1
+            }
+        );
+        // The context names Syndra as fed, with her build kind.
+        let c = a.ctx.as_ref().unwrap();
+        assert_eq!(c.fed.map(|f| f.champion), Some(E2E_SYNDRA));
+        let syndra = c.foes.iter().find(|f| f.champion == E2E_SYNDRA).unwrap();
+        assert_eq!(syndra.kind, FoeKind::Ap(2));
+        // Blackfire Torch puts you on P3 ([6653, 2503, 3116]), named by its rarest core item, and the
+        // plan names up to two more items that you neither own nor get now.
+        assert_eq!(a.path, Some(2), "{a:?}");
+        assert!(a.path_item.is_some_and(|id| sd.items.contains_key(&id)));
+        assert!(!a.plan.is_empty() && a.plan.len() <= 2, "{:?}", a.plan);
+        for id in &a.plan {
+            assert!(!a.items.iter().any(|p| p.id == *id) && *id != 2503, "{id}");
+        }
+        // The worker passes the path and the fed enemy back: the next pass gives the same advice.
+        let (sd2, d, r) = (super::testkit::sd(), heimer(), fed_mage_roster());
+        let summary = context(&r, &sd2, &HashMap::new());
+        let mut i = input(r.me(), &d, &sd2);
+        i.ctx = Some(&summary);
+        i.prev_path = a.path;
+        i.prev_fed = a.fed_rule;
+        i.prev_rules = Some(a.rules);
+        assert_eq!(advise(&i), a);
+    }
+
+    #[test]
+    fn the_fed_mage_game_has_no_number_from_a_win_rate() {
+        fn with_rates(v: &mut Value, rate: f64) {
+            match v {
+                Value::Object(m) => {
+                    for (k, x) in m.iter_mut() {
+                        if k == "winRate" {
+                            *x = serde_json::json!(rate);
+                        } else {
+                            with_rates(x, rate);
+                        }
+                    }
+                }
+                Value::Array(a) => a.iter_mut().for_each(|x| with_rates(x, rate)),
+                _ => {}
+            }
+        }
+        let raw: Value = serde_json::from_str(HEIMER).unwrap();
+        let (mut lo, mut hi) = (raw.clone(), raw);
+        with_rates(&mut lo, 0.0);
+        with_rates(&mut hi, 1.0);
+        let lo = fed_mage_advice(&data::kit_champion(&lo));
+        let hi = fed_mage_advice(&data::kit_champion(&hi));
+        assert_eq!(lo, hi);
+        assert_eq!(lo, fed_mage_game());
+    }
+
+    #[test]
+    fn three_deaths_to_caitlyn_feed_the_killer_rule_through_the_recap_tracker() {
+        let sd = sd();
+        let (dead, t, a) = death_game();
+        assert!(a.me_dead && dead.me().deaths == 3);
+        // The tracker names Caitlyn for this death and counts three.
+        let caitlyn = Killer {
+            champion: E2E_CAITLYN,
+            times: 3,
+        };
+        assert_eq!(t.killer(), Some(caitlyn));
+        assert_eq!(
+            a.recap,
+            Some(Recap {
+                killers: vec![E2E_CAITLYN]
+            })
+        );
+        assert_eq!(a.killer, Some(caitlyn));
+        // Caitlyn deals physical damage: an armor pick with the killer reason.
+        let pick = a
+            .items
+            .iter()
+            .find(|p| {
+                p.reason
+                    == Reason::VsKiller {
+                        champion: E2E_CAITLYN,
+                        times: 3,
+                    }
+            })
+            .unwrap_or_else(|| panic!("no VsKiller pick in {:?}", a.items));
+        assert!(has_bit(&sd, pick.id, cat::ARMOR), "{pick:?}");
+        // A new killer in the recap changes the signature, so the overlay pops up.
+        let other = Advice {
+            recap: Some(Recap {
+                killers: vec![E2E_SYNDRA],
+            }),
+            ..a.clone()
+        };
+        assert_ne!(a.signature(), other.signature());
+    }
+
+    #[test]
+    fn a_killer_without_a_recap_still_reaches_the_advice() {
+        // After a respawn the recap is gone, and the nemesis is still the killer of the rule.
+        let (sd, d) = (sd(), heimer());
+        let (dead, mut t, _) = death_game();
+        let mut alive = dead.clone();
+        alive.players[0].dead = false;
+        t.observe(&alive, std::time::Instant::now());
+        assert_eq!(t.recap(), None);
+        let summary = context(&alive, &sd, &HashMap::new());
+        let mut i = input(alive.me(), &d, &sd);
+        i.ctx = Some(&summary);
+        i.killer = t.killer();
+        i.recap = t.recap();
+        let a = advise(&i);
+        assert_eq!(
+            a.killer,
+            Some(Killer {
+                champion: E2E_CAITLYN,
+                times: 3
+            })
+        );
+        assert_eq!(a.recap, None);
     }
 }
