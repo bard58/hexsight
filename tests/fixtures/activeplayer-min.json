@@ -1,0 +1,16 @@
+{
+  "abilities": {},
+  "championStats": {
+    "abilityPower": 112.0,
+    "armor": 72.5,
+    "attackDamage": 61.0,
+    "currentHealth": 840.2,
+    "magicResist": 48.25,
+    "maxHealth": 1688.0,
+    "moveSpeed": 355.0
+  },
+  "currentGold": 1250.5,
+  "level": 9,
+  "riotId": "Player1#EUW",
+  "summonerName": "Player1"
+}
