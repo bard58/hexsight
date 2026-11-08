@@ -8,6 +8,7 @@ All notable changes to this project are in this file. The format follows [Keep a
 
 - The builds and the item sets now use the most played profile and route of a style, not the one with the best win rate. For Heimerdinger, the core is now Blackfire Torch, Liandry's Torment, and Rylai's Crystal Scepter, as half the players buy it. Before, it came from a profile with 4.5% of the games.
 - The later items and the boots now go by pick rate, and a row with fewer than 300 games is left out. Before, a rare item with a high win rate could come first.
+- The boots tip now shows the most played pair of the build. The second pair gets 2 points less. Before, both pairs got the same points and the cheaper pair came first. For example, Heimerdinger got Berserker's Greaves instead of Sorcerer's Shoes.
 - The boots block now says "most players skip them" only when half the players or more buy no boots. Before, it said so when the "no boots" row had the best win rate.
 
 ### Changed

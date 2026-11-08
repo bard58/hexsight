@@ -30,6 +30,8 @@ const CORE_STEP: i32 = 8;
 /// Boots: after the first finished item, and before it.
 const BOOTS_LATE: i32 = 90;
 const BOOTS_EARLY: i32 = 55;
+/// The second pair of boots of the build scores this much less than the first.
+const BOOTS_STEP: i32 = 2;
 /// An item of the list "later" of the build, and the step for each next one.
 const LATER_BASE: i32 = 62;
 const LATER_STEP: i32 = 4;
@@ -823,17 +825,15 @@ fn rank(input: &Input) -> Ranking {
         );
     }
     if !build.boots_skipped {
-        for &id in build.boots.iter().take(2) {
-            put(
-                &mut cands,
-                id,
-                if finished >= 1 {
-                    BOOTS_LATE
-                } else {
-                    BOOTS_EARLY
-                },
-                Reason::Boots,
-            );
+        // The boots come in pick rate order: the most played pair gets the higher score, so a tie
+        // on price never puts a rare pair first.
+        for (i, &id) in build.boots.iter().take(2).enumerate() {
+            let base = if finished >= 1 {
+                BOOTS_LATE
+            } else {
+                BOOTS_EARLY
+            };
+            put(&mut cands, id, base - BOOTS_STEP * i as i32, Reason::Boots);
         }
     }
     for (j, &id) in build.later.iter().take(8).enumerate() {
@@ -1729,9 +1729,9 @@ mod tests {
             vec![Reason::Core(1), Reason::Core(2), Reason::Core(3)]
         );
         // With the first item bought, the second comes first. The build buys boots, so a pair comes
-        // in after the first finished item (the cheaper of the top two pairs), before the last core item.
+        // in after the first finished item (the most played pair, Sorcerer's Shoes), before the last core item.
         let a = advise(&input_of(&[2503], &d, &sd));
-        assert_eq!(ids(&a), vec![6653, 3008, 3116]);
+        assert_eq!(ids(&a), vec![6653, 3020, 3116]);
         assert_eq!(a.items[0].reason, Reason::Core(2));
         assert_eq!(a.items[1].reason, Reason::Boots);
         assert_eq!(a.items[2].reason, Reason::Core(3));
@@ -1832,11 +1832,11 @@ mod tests {
         let sd = sd();
         let mut d = with_build("ap", &[2503, 6653, 3089], &[]);
         d.builds[0].boots = vec![3020, 3158];
-        // Before the first finished item the boots score 55: they come after the core items. Both pairs tie,
-        // the cheaper pair stays (Ionian Boots of Lucidity), and the other one is not on the list.
+        // Before the first finished item the first pair scores 55: it comes after the core items. The most
+        // played pair stays (Sorcerer's Shoes), and the other one is not on the list.
         let first = rank(&input_of(&[], &d, &sd));
-        assert_eq!(score_of(&first, 3158), Some(BOOTS_EARLY));
-        assert_eq!(score_of(&first, 3020), None);
+        assert_eq!(score_of(&first, 3020), Some(BOOTS_EARLY));
+        assert_eq!(score_of(&first, 3158), None);
         assert_eq!(
             first
                 .scored
@@ -1846,9 +1846,13 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![2503, 6653, 3089]
         );
-        // After it, they score 90. Both pairs tie, the cheaper pair comes first, and only one pair shows.
+        // After it, the first pair scores 90. The most played pair comes first, and only one pair shows.
         let a = advise(&input_of(&[2503], &d, &sd));
-        assert_eq!(ids(&a), vec![6653, 3158, 3089]);
+        assert_eq!(ids(&a), vec![6653, 3020, 3089]);
+        assert_eq!(
+            score_of(&rank(&input_of(&[2503], &d, &sd)), 3020),
+            Some(BOOTS_LATE)
+        );
         assert_eq!(a.items[1].reason, Reason::Boots);
         let all = rank(&input_of(&[2503], &d, &sd));
         assert_eq!(all.scored.iter().filter(|s| s.boots).count(), 1);
@@ -2420,16 +2424,40 @@ mod tests {
         let mut d = with_build("ap", &[2503, 6653, 3089], &[]);
         d.builds[0].boots = vec![3020, 3158];
         // Boots (1001, 300 gold, no parts) are no finished pair. Both upgrades stay and get the 8 points
-        // for the part that you own. They tie, and the cheaper pair (Ionian Boots) is the one that shows.
+        // for the part that you own. The most played pair (Sorcerer's Shoes) is the one that shows.
         assert!(
             sd.item_info[&1001].from.is_empty() && sd.item_info[&1001].total == BASIC_BOOTS_GOLD
         );
         let r = rank(&input_of(&[2503, 1001], &d, &sd));
-        assert_eq!(score_of(&r, 3158), Some(BOOTS_LATE + STABLE));
+        assert_eq!(score_of(&r, 3020), Some(BOOTS_LATE + STABLE));
+        assert_eq!(score_of(&r, 3158), None);
         assert_eq!(r.scored.iter().filter(|s| s.boots).count(), 1);
         // Sorcerer's Shoes are a finished pair: no boots come.
         let r = rank(&input_of(&[2503, 3020], &d, &sd));
         assert!(r.scored.iter().all(|s| !s.boots));
+    }
+
+    #[test]
+    fn the_first_boots_of_the_build_beat_a_cheaper_second_pair() {
+        let mut sd = sd();
+        let mut d = with_build("ap", &[2503, 6653, 3089], &[]);
+        d.builds[0].boots = vec![3020, 3158];
+        // Ionian Boots of Lucidity (the second pair) cost less than Sorcerer's Shoes (the first pair).
+        assert!(sd.item_info[&3158].total < sd.item_info[&3020].total);
+        // The first pair wins on points, not on price.
+        let r = rank(&input_of(&[2503], &d, &sd));
+        assert_eq!(score_of(&r, 3020), Some(BOOTS_LATE));
+        assert_eq!(score_of(&r, 3158), None);
+        // With the first pair out of the shop, the second pair shows with 2 points less.
+        sd.item_info.get_mut(&3020).unwrap().in_store = false;
+        let r = rank(&input_of(&[2503], &d, &sd));
+        assert_eq!(score_of(&r, 3158), Some(BOOTS_LATE - BOOTS_STEP));
+        // In the other order, Ionian Boots are the first pair and get the full points.
+        sd.item_info.get_mut(&3020).unwrap().in_store = true;
+        d.builds[0].boots = vec![3158, 3020];
+        let r = rank(&input_of(&[2503], &d, &sd));
+        assert_eq!(score_of(&r, 3158), Some(BOOTS_LATE));
+        assert_eq!(score_of(&r, 3020), None);
     }
 
     #[test]
