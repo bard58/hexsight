@@ -4,6 +4,11 @@ All notable changes to this project are in this file. The format follows [Keep a
 
 ## [Unreleased]
 
+- An item tip that you cannot pay for yet now names the part that your gold pays for now. The main window shows it in a line under the item. The overlay shows it as a small icon.
+- The overlay cells now show the gold that is missing for an item, for example "-700".
+- Hexsight now reads the items of the players each second while you are dead and for 10 seconds after a purchase. A purchase of 150 gold now counts too. Before, the list was read every 4 seconds, and only a purchase of 250 gold or more counted.
+- The overlay cells now say "fits an augment" for an item that pairs with an augment. Before, the long name of the augment was cut. The main window still shows the name.
+
 ## [0.1.2] - 2026-11-08
 
 ### Fixed

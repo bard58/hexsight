@@ -1912,6 +1912,10 @@ fn spell_suggestion(cs: &ChampStats, sd: &StaticData, min_games: u32) -> Option<
 /// Height of a row of the card "Next items", in points.
 const ITEM_ROW_H: f32 = 40.0;
 
+/// A row with a part to buy now is this much higher: one line with the icon of the part and its name.
+const PART_LINE_H: f32 = 18.0;
+const PART_ICON: f32 = 14.0;
+
 /// Room at the right of an item row for the chip (the check mark or the missing gold), in points.
 const ITEM_CHIP_W: f32 = 44.0;
 
@@ -1952,6 +1956,28 @@ fn reason_text(lang: Lang, sd: &StaticData, r: Reason) -> String {
             |a| lang.fmt(Key::ReasonPairs, &[&a.name]),
         ),
     }
+}
+
+/// The words of a reason in a cell of the overlay. A pair is short there: a cell has no room for the
+/// name of the augment, and the row of the main window has it.
+fn cell_reason_text(lang: Lang, sd: &StaticData, r: Reason) -> String {
+    match r {
+        Reason::Pairs { .. } => lang.t(Key::ReasonPairsShort).to_string(),
+        _ => reason_text(lang, sd, r),
+    }
+}
+
+/// The part to buy now of a pick, with its name: only when the gold is known and the item is not ready.
+fn part_now(sd: &StaticData, a: &Advice, p: &ItemPick) -> Option<(i64, String)> {
+    let part = p.part.filter(|_| a.has_gold && !p.ready)?;
+    sd.items.get(&part).map(|it| (part, it.name.clone()))
+}
+
+/// The missing gold of a pick in a cell of the overlay, as "-700". `None` when the item is ready, when
+/// the gold is not known, and when nothing is missing.
+fn cell_short(a: &Advice, p: &ItemPick, gold: Option<u32>) -> Option<String> {
+    let short = p.need.saturating_sub(gold?);
+    (a.has_gold && !p.ready && short > 0).then(|| format!("-{short}"))
 }
 
 /// The tooltip line of a reason: who it comes from. A rule says that it is Hexsight's own rule and no
@@ -5824,12 +5850,16 @@ impl App {
         .on_hover_text(lang.t(Key::SuggestNote));
     }
 
-    /// One row of the card "Next items": the icon, the name, the reason, and the chip.
+    /// One row of the card "Next items": the icon, the name, the reason, and the chip. When your gold
+    /// does not pay for the item, a line under them names the part that it pays for now (`part_now`).
     fn item_row(&self, ui: &mut Ui, v: &View, sd: &StaticData, a: &Advice, p: &ItemPick, i: usize) {
         let lang = self.lang;
-        let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), ITEM_ROW_H), Sense::hover());
+        let part = part_now(sd, a, p);
+        let h = ITEM_ROW_H + if part.is_some() { PART_LINE_H } else { 0.0 };
+        let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
+        let mid = r.top() + ITEM_ROW_H / 2.0;
         let icon = Rect::from_min_size(
-            pos2(r.left(), r.center().y - ITEM_ICON / 2.0),
+            pos2(r.left(), mid - ITEM_ICON / 2.0),
             Vec2::splat(ITEM_ICON),
         );
         let item = sd.items.get(&p.id);
@@ -5860,11 +5890,25 @@ impl App {
             if p.reason.is_rule() { LABEL } else { LABEL_2 },
             room,
         );
+        if let Some((id, part)) = &part {
+            let at = Rect::from_min_size(pos2(x, r.top() + ITEM_ROW_H), Vec2::splat(PART_ICON));
+            let url = sd.items.get(id).map_or("", |it| it.icon.as_str());
+            self.paint_icon(ui, url, at, 4);
+            text_at(
+                ui,
+                pos2(at.right() + 4.0, at.center().y - 7.0),
+                &lang.fmt(Key::PartNow, &[part]),
+                FontId::proportional(11.5),
+                LABEL_2,
+                // The chip sits higher, so the line has the width of the row.
+                r.right() - at.right() - 4.0,
+            );
+        }
         // The chip: a check mark when you have the gold, else how much is missing. Without the gold, no chip.
         let mut tip = format!("{name}\n{}", reason_tip(lang, p.reason));
         if a.has_gold {
             let short = p.need.saturating_sub(v.gold.unwrap_or(0));
-            let at = pos2(r.right(), r.center().y);
+            let at = pos2(r.right(), mid);
             if p.ready {
                 ui.painter().text(
                     at,
@@ -6148,14 +6192,23 @@ impl App {
                     pos2(row.left() + i as f32 * (cell_w + ADVICE_GAP), row.top()),
                     vec2(cell_w, ADVICE_CELL_H),
                 );
-                self.advice_cell(ui, sd, a, rect, p);
+                self.advice_cell(ui, sd, a, rect, p, v.gold);
             }
         }
     }
 
     /// One cell of the advice card: the icon (with a green dot when you have the gold), the name in up to
-    /// two lines, and the reason under them.
-    fn advice_cell(&self, ui: &Ui, sd: &StaticData, a: &Advice, rect: Rect, p: &ItemPick) {
+    /// two lines, and the reason under them. When you do not have the gold, the missing gold sits small at
+    /// the bottom of the icon, and the part that the gold pays for now is a small icon at its corner.
+    fn advice_cell(
+        &self,
+        ui: &Ui,
+        sd: &StaticData,
+        a: &Advice,
+        rect: Rect,
+        p: &ItemPick,
+        gold: Option<u32>,
+    ) {
         let lang = self.lang;
         let plate = ui.painter();
         plate.rect_filled(rect, CornerRadius::same(11), Color32::from_white_alpha(24));
@@ -6183,6 +6236,30 @@ impl App {
                 egui::Stroke::new(1.0, PLATE),
             );
         }
+        if let Some(short) = cell_short(a, p, gold) {
+            let g = ui
+                .painter()
+                .layout_no_wrap(short, cell_short_font(), LABEL_2);
+            let tag = Rect::from_center_size(
+                pos2(icon.center().x, icon.bottom() - g.size().y / 2.0),
+                g.size() + vec2(4.0, 0.0),
+            );
+            ui.painter()
+                .rect_filled(tag, CornerRadius::same(3), Color32::from_black_alpha(190));
+            ui.painter()
+                .galley(tag.center() - g.size() / 2.0, g, LABEL_2);
+        }
+        if let Some((id, _)) = part_now(sd, a, p) {
+            let badge = part_badge(icon);
+            let url = sd.items.get(&id).map_or("", |it| it.icon.as_str());
+            self.paint_icon(ui, url, badge, 3);
+            ui.painter().rect_stroke(
+                badge,
+                CornerRadius::same(3),
+                egui::Stroke::new(1.0, PLATE),
+                egui::StrokeKind::Outside,
+            );
+        }
         let x = icon.right() + 5.0;
         let name = item.map_or_else(|| format!("#{}", p.id), |it| it.name.clone());
         let mut job = egui::text::LayoutJob::single_section(
@@ -6194,7 +6271,7 @@ impl App {
         let g = ui.painter().layout_job(job);
         ui.painter().galley(pos2(x, rect.top() + 3.0), g, LABEL);
         // The reason sits at the bottom of the cell: its last line ends 6 points above the edge.
-        let reason = reason_text(lang, sd, p.reason);
+        let reason = cell_reason_text(lang, sd, p.reason);
         let ink = if p.reason.is_rule() { LABEL } else { LABEL_2 };
         let mut job = egui::text::LayoutJob::single_section(
             reason,
@@ -6221,6 +6298,17 @@ fn advice_name_font() -> FontId {
 }
 fn advice_reason_font() -> FontId {
     FontId::new(11.0, semibold())
+}
+
+/// The font of the missing gold at the bottom of the icon of a cell.
+fn cell_short_font() -> FontId {
+    FontId::new(9.5, semibold())
+}
+
+/// The small icon of the part to buy now: in the top right corner of the icon of a cell, where the green
+/// dot of a ready item sits.
+fn part_badge(icon: Rect) -> Rect {
+    Rect::from_min_size(icon.right_top() + vec2(-13.0, 0.0), Vec2::splat(13.0))
 }
 
 /// The space between the reason and the bottom edge of a cell of the advice card, in points.
@@ -11468,6 +11556,7 @@ mod tests {
             (3165, "Morellonomicon"),
             (3089, "Rabadon's Deathcap"),
             (4646, "Stormsurge"),
+            (3802, "Lost Chapter"),
         ] {
             sd.items.insert(
                 id,
@@ -11522,18 +11611,21 @@ mod tests {
                 reason: Reason::Core(1),
                 need: 2800,
                 ready: false,
+                part: None,
             },
             ItemPick {
                 id: 6653,
                 reason: Reason::VsAp(70),
                 need: 600,
                 ready: true,
+                part: None,
             },
             ItemPick {
                 id: 3165,
                 reason: Reason::AntiHeal(2),
                 need: 2850,
                 ready: false,
+                part: None,
             },
         ]
     }
@@ -12085,6 +12177,14 @@ mod tests {
             }
             // The item name has the same room, and the tooltip has the long form.
             assert!(text_width(&ctx, "Rabadon's Deathcap", FontId::new(13.0, semibold())) <= room);
+            // The line of the part to buy now is under the chip: it has the chip room too, less its
+            // icon. A common part fits.
+            for part in ["Lost Chapter", "Kayıp Bölüm"] {
+                let text = lang.fmt(Key::PartNow, &[&part]);
+                let w = text_width(&ctx, &text, FontId::proportional(11.5));
+                let left = room + ITEM_CHIP_W - PART_ICON - 4.0;
+                assert!(w <= left, "{lang:?} {text:?} needs {w:.1} points of {left}");
+            }
         }
     }
 
@@ -12107,14 +12207,104 @@ mod tests {
             Reason::VsTanks(5),
         ];
         for lang in [Lang::En, Lang::Tr] {
-            for r in worst {
-                let text = reason_text(lang, &sd, r);
+            // A pair has the short text in a cell, also with a long augment name.
+            let pair = Reason::Pairs {
+                augment: 3150,
+                known: false,
+            };
+            assert_eq!(
+                cell_reason_text(lang, &sd, pair),
+                lang.t(Key::ReasonPairsShort)
+            );
+            for r in worst.into_iter().chain([pair]) {
+                let text = cell_reason_text(lang, &sd, r);
                 let w = text_width(&ctx, &text, advice_reason_font());
                 assert!(
                     w <= room,
                     "{lang:?} {text:?} needs {w:.1} points of {room:.1}"
                 );
             }
+        }
+        // The missing gold at the bottom of the 28-point icon: with its 4 points of plate, the widest
+        // price sticks out at most 4 points at each side, so it stays off the edge and off the name.
+        let w = text_width(&ctx, "-3500", cell_short_font()) + 4.0;
+        assert!(w <= 28.0 + 8.0, "-3500 needs {w:.1} points");
+        // The part icon sits inside the item icon, in the corner of the green dot.
+        let icon = Rect::from_min_size(pos2(5.0, 4.0), Vec2::splat(28.0));
+        assert!(icon.contains_rect(part_badge(icon)));
+        assert_eq!(part_badge(icon).right_top(), icon.right_top());
+    }
+
+    #[test]
+    fn a_pick_without_the_gold_shows_the_missing_gold_and_the_part_to_buy_now() {
+        let sd = suggest_data();
+        let mut a = game_advice();
+        a.items[0].part = Some(3802);
+        let (first, ready) = (a.items[0], a.items[1]);
+        // The part and the missing gold show only when the gold is known and the item is not ready.
+        assert_eq!(
+            part_now(&sd, &a, &first),
+            Some((3802, "Lost Chapter".to_string()))
+        );
+        assert_eq!(cell_short(&a, &first, Some(1000)).as_deref(), Some("-1800"));
+        assert_eq!(cell_short(&a, &ready, Some(1000)), None);
+        assert_eq!(cell_short(&a, &first, None), None);
+        assert_eq!(cell_short(&a, &first, Some(5000)), None);
+        let no_gold = Advice {
+            has_gold: false,
+            ..a.clone()
+        };
+        assert_eq!(part_now(&sd, &no_gold, &first), None);
+        assert_eq!(cell_short(&no_gold, &first, Some(1000)), None);
+        // A part that the data does not name shows nothing.
+        let mut odd = a.clone();
+        odd.items[0].part = Some(999_999);
+        assert_eq!(part_now(&sd, &odd, &odd.items[0]), None);
+        let v = View {
+            sd: Some(sd.clone()),
+            ..waiting_view(Some(a.clone()))
+        };
+        for lang in [Lang::En, Lang::Tr] {
+            // The main window: a line under the first item names the part, and the row is higher.
+            let app = test_app(Settings::default(), lang);
+            let line = lang.fmt(Key::PartNow, &[&"Lost Chapter"]);
+            let texts = part_texts(&app, |app, ui| app.items_card(ui, &v));
+            assert_eq!(texts.iter().filter(|t| **t == line).count(), 1, "{texts:?}");
+            let plain = waiting_view(Some(game_advice()));
+            let texts = part_texts(&app, |app, ui| app.items_card(ui, &plain));
+            assert!(!texts.contains(&line), "{texts:?}");
+            // The overlay: the missing gold of the two items without the gold, small and grey, and inside
+            // the left side of the cell, under the top of the name.
+            let dead = Advice {
+                me_dead: true,
+                ..a.clone()
+            };
+            let (boxes, _) = overlay_boxes(
+                lang,
+                &View {
+                    sd: Some(sd.clone()),
+                    ..waiting_view(Some(dead))
+                },
+            );
+            let shorts: Vec<_> = boxes.iter().filter(|b| b.0.starts_with('-')).collect();
+            assert_eq!(
+                shorts.iter().map(|b| b.0.as_str()).collect::<Vec<_>>(),
+                ["-1800", "-1850"],
+                "{lang:?}: {boxes:?}"
+            );
+            let name = boxes
+                .iter()
+                .find(|b| b.0.starts_with("Blackfire"))
+                .expect("the name of the first cell");
+            let tag = shorts[0];
+            assert_eq!(tag.2, LABEL_2, "{lang:?}");
+            assert!(tag.1.right() < name.1.left(), "{lang:?}: {tag:?} {name:?}");
+            assert!(tag.1.height() <= 13.0, "{lang:?}: {tag:?}");
+            // The overlay keeps the name of the part out: the icon is enough there.
+            assert!(
+                !boxes.iter().any(|b| b.0.contains("Lost Chapter")),
+                "{boxes:?}"
+            );
         }
     }
 
@@ -12355,8 +12545,10 @@ mod tests {
                     "{lang:?}: {name} is missing in {texts:?}"
                 );
             }
-            // No chip text and no tooltip in the overlay: the cell has no minus sign and no percent sign but the reason.
-            assert!(!texts.iter().any(|t| t.starts_with('-')), "{texts:?}");
+            // No chip and no tooltip in the overlay. The only minus signs are the missing gold of the
+            // two items without the gold (1000 gold against 2800 and 2850).
+            let shorts: Vec<_> = texts.iter().filter(|t| t.starts_with('-')).collect();
+            assert_eq!(shorts, ["-1800", "-1850"], "{texts:?}");
             // The footnote "Hexsight's own rule" is gone (it was 10 points of grey under the cells). A
             // reason from a rule has the brighter ink instead (see the test of the inks).
             assert!(
