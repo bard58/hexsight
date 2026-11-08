@@ -3405,10 +3405,19 @@ impl eframe::App for App {
         }
         // The old exe of an update is the way back if this copy is bad. It goes only after
         // this copy has run well for a while.
-        if !self.old_exe_cleaned && self.started.elapsed() >= update::HEALTHY_RUN {
-            self.old_exe_cleaned = true;
-            if let Ok(exe) = std::env::current_exe() {
-                update::cleanup_old(&exe);
+        if !self.old_exe_cleaned {
+            let run = self.started.elapsed();
+            if run >= update::HEALTHY_RUN {
+                self.old_exe_cleaned = true;
+                if let Ok(exe) = std::env::current_exe() {
+                    update::cleanup_old(&exe);
+                }
+            } else {
+                // An idle window draws no frames. Ask for one frame at the end of the
+                // healthy run, so the cleanup also runs when nobody touches the window.
+                ctx.request_repaint_after(
+                    update::HEALTHY_RUN - run + std::time::Duration::from_millis(50),
+                );
             }
         }
         // The new version runs after an update: keep the settings and end this copy.
