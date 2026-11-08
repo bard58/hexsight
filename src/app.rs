@@ -2015,8 +2015,10 @@ fn reason_text(lang: Lang, sd: &StaticData, r: Reason) -> String {
         Reason::OtherBuild => lang.t(Key::ReasonOtherBuild).to_string(),
         Reason::VsAp(p) => lang.fmt(Key::ReasonVsAp, &[&lang.pct(f32::from(p), 0)]),
         Reason::VsAd(p) => lang.fmt(Key::ReasonVsAd, &[&lang.pct(f32::from(p), 0)]),
-        Reason::AntiHeal(1) => lang.t(Key::ReasonAntiHealFed).to_string(),
+        // Without the context Hexsight cannot tell if the one healer is fed: the plain form.
+        Reason::AntiHeal(1) => lang.t(Key::ReasonAntiHeal1).to_string(),
         Reason::AntiHeal(n) => lang.fmt(Key::ReasonAntiHeal, &[&n]),
+        Reason::VsTanks(1) => lang.t(Key::ReasonVsTank1).to_string(),
         Reason::VsTanks(n) => lang.fmt(Key::ReasonVsTanks, &[&n]),
         Reason::Pairs { augment, .. } => sd.augments.get(&augment).map_or_else(
             || lang.t(Key::ReasonPairsEarlier).to_string(),
@@ -2041,9 +2043,13 @@ fn reason_text(lang: Lang, sd: &StaticData, r: Reason) -> String {
 }
 
 /// The words of a reason in a cell of the overlay. A pair is short there: a cell has no room for the
-/// name of the augment, and the row of the main window has it.
-fn cell_reason_text(lang: Lang, sd: &StaticData, r: Reason) -> String {
+/// name of the augment, and the row of the main window has it. One healer reads as fed only when the
+/// context says it is the fed enemy now.
+fn cell_reason_text(lang: Lang, sd: &StaticData, r: Reason, ctx: Option<&GameContext>) -> String {
     match r {
+        Reason::AntiHeal(1) if ctx.is_some_and(one_fed_healer) => {
+            lang.t(Key::ReasonAntiHealFedCell).to_string()
+        }
         Reason::Pairs { .. } => lang.t(Key::ReasonPairsShort).to_string(),
         Reason::VsFed {
             champion,
@@ -2054,9 +2060,14 @@ fn cell_reason_text(lang: Lang, sd: &StaticData, r: Reason) -> String {
             &[&champion_name(sd, champion), &format!("{kills}/{deaths}")],
         ),
         Reason::VsKiller { .. } => lang.t(Key::ReasonVsKillerCell).to_string(),
-        Reason::AntiHeal(1) => lang.t(Key::ReasonAntiHealFedCell).to_string(),
         _ => reason_text(lang, sd, r),
     }
+}
+
+/// The context has one healer, and it is the fed enemy now. Only then does a one-healer reason say
+/// "fed": the healer rule can also hold for a healer that is no longer fed.
+fn one_fed_healer(ctx: &GameContext) -> bool {
+    matches!(ctx.healers[..], [h] if ctx.fed.is_some_and(|f| f.champion == h))
 }
 
 /// The part to buy now of a pick, with its name: only when the gold is known and the item is not ready.
@@ -2257,7 +2268,10 @@ fn named_reason_text(lang: Lang, sd: &StaticData, r: Reason, ctx: &GameContext) 
             Key::ReasonVsAdNamed,
             &[&names.join(", "), &lang.pct(f32::from(p), 0)],
         )),
-        Reason::AntiHeal(1) => Some(lang.fmt(Key::ReasonFedHealerNamed, &[&names[0]])),
+        Reason::AntiHeal(1) if one_fed_healer(ctx) => {
+            Some(lang.fmt(Key::ReasonFedHealerNamed, &[&names[0]]))
+        }
+        Reason::AntiHeal(1) => Some(lang.fmt(Key::ReasonHealerNamed, &[&names[0]])),
         Reason::AntiHeal(_) if several => {
             Some(lang.fmt(Key::ReasonHealersNamed, &[&join_names(lang, &names)]))
         }
@@ -2275,9 +2289,15 @@ fn row_reason_texts(
     r: Reason,
     ctx: Option<&GameContext>,
 ) -> Vec<String> {
+    let count = match r {
+        Reason::AntiHeal(1) if ctx.is_some_and(one_fed_healer) => {
+            lang.t(Key::ReasonAntiHealFed).to_string()
+        }
+        _ => reason_text(lang, sd, r),
+    };
     ctx.and_then(|c| named_reason_text(lang, sd, r, c))
         .into_iter()
-        .chain([reason_text(lang, sd, r)])
+        .chain([count])
         .collect()
 }
 
@@ -2357,9 +2377,9 @@ fn killer_times(a: &Advice, champion: i64) -> u8 {
 }
 
 /// The recap line while you are dead (F5), the fullest first: "Killed by Zed · 9/2/4 · 85% AD", then
-/// without the share, then without the score. A repeat killer: "Zed killed you 3 times · 9/2/4". Several
-/// enemies that scored: "Killed by Zed and Lux". Empty while alive, without a recap, and when Hexsight
-/// does not know a name.
+/// without the share, then without the score. A repeat killer: "Zed killed you 3 times · 9/2/4". Empty
+/// while alive, without a recap, with more than one killer (one of them killed a teammate), and when
+/// Hexsight does not know the name.
 fn recap_texts(lang: Lang, sd: &StaticData, a: &Advice) -> Vec<String> {
     let Some(r) = a
         .recap
@@ -2405,7 +2425,7 @@ fn recap_texts(lang: Lang, sd: &StaticData, a: &Advice) -> Vec<String> {
         out.push(base);
         return out;
     }
-    vec![lang.fmt(Key::RecapKilledBy, &[&join_names(lang, &names)])]
+    Vec::new()
 }
 
 /// The style note of the "Next items" header, the best first: the path ("On your Malignance path")
@@ -7063,7 +7083,7 @@ impl App {
                 return;
             }
         }
-        let reason = cell_reason_text(lang, sd, p.reason);
+        let reason = cell_reason_text(lang, sd, p.reason, a.ctx.as_ref());
         let mut job = egui::text::LayoutJob::single_section(
             reason,
             egui::TextFormat::simple(advice_reason_font(), ink),
@@ -13232,11 +13252,11 @@ mod tests {
                 known: false,
             };
             assert_eq!(
-                cell_reason_text(lang, &sd, pair),
+                cell_reason_text(lang, &sd, pair, None),
                 lang.t(Key::ReasonPairsShort)
             );
             for r in worst.into_iter().chain([pair]) {
-                let text = cell_reason_text(lang, &sd, r);
+                let text = cell_reason_text(lang, &sd, r, None);
                 let w = text_width(&ctx, &text, advice_reason_font());
                 assert!(
                     w <= room,
@@ -13328,29 +13348,56 @@ mod tests {
     }
 
     #[test]
-    fn one_healer_reads_as_a_fed_healer() {
-        // The anti-heal rule fires for one healer only when it is the fed enemy, so no text says "1 healers".
+    fn one_healer_reads_as_fed_only_when_it_is_the_fed_enemy() {
         let sd = suggest_data();
+        let fed = |healer: i64, fed: Option<i64>| GameContext {
+            healers: vec![healer],
+            fed: fed.map(|champion| suggest::Fed {
+                champion,
+                kills: 8,
+                deaths: 1,
+                assists: 0,
+                level: 12,
+            }),
+            ..Default::default()
+        };
+        let r = Reason::AntiHeal(1);
+        // Without the context: the plain one-healer form, never "1 healers".
+        assert_eq!(reason_text(Lang::En, &sd, r), "vs 1 healer");
+        assert_eq!(reason_text(Lang::Tr, &sd, r), "1 iyileştirene karşı");
+        assert_eq!(cell_reason_text(Lang::En, &sd, r, None), "vs 1 healer");
+        // The healer is the fed enemy now: "fed". The cell has a shorter form.
+        let now = fed(6, Some(6));
+        let count = |lang| row_reason_texts(lang, &sd, r, Some(&now)).pop().unwrap();
+        assert_eq!(count(Lang::En), "vs a fed healer");
+        assert_eq!(count(Lang::Tr), "fed iyileştirene karşı");
         assert_eq!(
-            reason_text(Lang::En, &sd, Reason::AntiHeal(1)),
+            cell_reason_text(Lang::Tr, &sd, r, Some(&now)),
+            "fed, iyileştiriyor"
+        );
+        assert_eq!(
+            cell_reason_text(Lang::En, &sd, r, Some(&now)),
             "vs a fed healer"
         );
-        // v0.1.3: "1 iyileştirene karşı" read stiff; Turkish players say "fed". The cell has a shorter form.
-        assert_eq!(
-            reason_text(Lang::Tr, &sd, Reason::AntiHeal(1)),
-            "fed iyileştirene karşı"
-        );
-        assert_eq!(
-            cell_reason_text(Lang::Tr, &sd, Reason::AntiHeal(1)),
-            "fed iyileştiren"
-        );
-        assert_eq!(
-            cell_reason_text(Lang::En, &sd, Reason::AntiHeal(1)),
-            "vs a fed healer"
-        );
+        // The rule holds for a healer that is no longer fed, or another enemy is the fed one.
+        for calm in [fed(6, None), fed(6, Some(4))] {
+            let count = |lang| row_reason_texts(lang, &sd, r, Some(&calm)).pop().unwrap();
+            assert_eq!(count(Lang::En), "vs 1 healer");
+            assert_eq!(count(Lang::Tr), "1 iyileştirene karşı");
+            assert_eq!(
+                cell_reason_text(Lang::En, &sd, r, Some(&calm)),
+                "vs 1 healer"
+            );
+        }
         assert_eq!(
             reason_text(Lang::En, &sd, Reason::AntiHeal(2)),
             "vs 2 healers"
+        );
+        // One tank that holds the tank rule.
+        assert_eq!(reason_text(Lang::En, &sd, Reason::VsTanks(1)), "vs 1 tank");
+        assert_eq!(
+            reason_text(Lang::Tr, &sd, Reason::VsTanks(1)),
+            "1 tanka karşı"
         );
     }
 
@@ -13727,15 +13774,36 @@ mod tests {
         );
         assert_eq!(
             say(Lang::Tr, Reason::AntiHeal(2)).as_deref(),
-            Some("Soraka ve Yuumi iyileşiyor")
+            Some("Soraka ve Yuumi iyileştiriyor")
         );
+        // One healer that is not the fed enemy: no "fed".
         assert_eq!(
             say(Lang::En, Reason::AntiHeal(1)).as_deref(),
-            Some("Soraka is fed and heals")
+            Some("Soraka heals")
         );
         assert_eq!(
             say(Lang::Tr, Reason::AntiHeal(1)).as_deref(),
-            Some("Soraka fed, iyileşiyor")
+            Some("Soraka iyileştiriyor")
+        );
+        // One healer that is the fed enemy now.
+        let fed = GameContext {
+            healers: vec![6],
+            fed: Some(suggest::Fed {
+                champion: 6,
+                kills: 8,
+                deaths: 1,
+                assists: 4,
+                level: 12,
+            }),
+            ..c.clone()
+        };
+        assert_eq!(
+            named_reason_text(Lang::En, &sd, Reason::AntiHeal(1), &fed).as_deref(),
+            Some("Soraka is fed and heals")
+        );
+        assert_eq!(
+            named_reason_text(Lang::Tr, &sd, Reason::AntiHeal(1), &fed).as_deref(),
+            Some("Soraka fed, iyileştiriyor")
         );
         assert_eq!(
             say(Lang::En, Reason::VsAp(70)).as_deref(),
@@ -13996,7 +14064,7 @@ mod tests {
         );
         assert_eq!(
             context_line(Lang::Tr, &sd, &c).as_deref(),
-            Some("%70 AP · %30 AD · Fed: Zed 9/2/4 · 3 kritik eşyası · 2 iyileştiren")
+            Some("%70 AP · %30 AD · Fed: Zed 9/2/4 · 3 krit eşyası · 2 iyileştiren")
         );
         assert_eq!(
             context_text(Lang::En, &sd, &c, false).as_deref(),
@@ -14010,7 +14078,7 @@ mod tests {
         );
         assert_eq!(
             kind_part(Lang::Tr, &c).as_deref(),
-            Some("3 kritik eşyası, iyileşiyor")
+            Some("3 krit eşyası, iyileştiriyor")
         );
         for (kind, en, tr) in [
             (suggest::FoeKind::Ap(2), "2 AP items", "2 AP eşyası"),
@@ -14105,7 +14173,7 @@ mod tests {
             short.foes[0].heals = false;
             short.foes[0].kind = suggest::FoeKind::Crit(3);
             // A short kind fits the overlay line as it is, and the English summary row. The Turkish row
-            // is wider ("3 kritik eşyası"), so there the kind may drop.
+            // is wider ("3 krit eşyası"), so there the kind may drop.
             let full = fed_text(lang, &sd, &short, true);
             assert!(line_fits(&full), "{lang:?} {full}");
             if lang == Lang::En {
@@ -14209,21 +14277,11 @@ mod tests {
             recap_texts(Lang::Tr, &sd, &repeat)[0],
             "Zed seni 3 kez öldürdü · 9/2/4"
         );
-        // Several enemies scored: the names only.
-        let two = dead_advice(vec![4, 6]);
-        assert_eq!(
-            recap_texts(Lang::En, &sd, &two),
-            ["Killed by Zed and Soraka"]
-        );
-        assert_eq!(
-            recap_texts(Lang::Tr, &sd, &two),
-            ["Seni Zed ve Soraka öldürdü"]
-        );
-        let three = dead_advice(vec![4, 6, 82]);
-        assert_eq!(
-            recap_texts(Lang::En, &sd, &three),
-            ["Killed by Zed, Soraka, Mordekaiser"]
-        );
+        // Several killers: one of them killed a teammate, so no line names them.
+        for lang in [Lang::En, Lang::Tr] {
+            assert!(recap_texts(lang, &sd, &dead_advice(vec![4, 6])).is_empty());
+            assert!(recap_texts(lang, &sd, &dead_advice(vec![4, 6, 82])).is_empty());
+        }
         // Alive, no recap, no killer, or a name that Hexsight does not know: no line.
         let alive = Advice {
             me_dead: false,
@@ -14262,16 +14320,13 @@ mod tests {
         let fits = |t: &str| text_width(&ctx, t, line_font.clone()) <= 312.0;
         let main_fits = |t: &str| text_width(&ctx, t, recap_font()) <= MAIN_W - 2.0 * MARGIN;
         for lang in [Lang::En, Lang::Tr] {
-            for killers in [vec![82], vec![223], vec![82, 223], vec![82, 223, 136]] {
+            for killers in [vec![82], vec![223]] {
                 let mut a = dead_advice(killers.clone());
                 let texts = recap_texts(lang, &sd, &a);
                 let shown = fit_or_last(texts.clone(), fits).unwrap();
                 let main = fit_or_last(texts, main_fits).unwrap();
-                // Three long names are cut with "…": the names are the point of the line.
-                if killers.len() <= 2 {
-                    assert!(fits(&shown), "{lang:?} {shown}");
-                    assert!(main_fits(&main), "{lang:?} {main}");
-                }
+                assert!(fits(&shown), "{lang:?} {shown}");
+                assert!(main_fits(&main), "{lang:?} {main}");
                 a.items[0].reason = Reason::VsKiller {
                     champion: killers[0],
                     times: 12,
@@ -14678,7 +14733,7 @@ mod tests {
                 Lang::Tr,
                 "Caitlyn seni 3 kez öldürdü",
                 // The spec had "seni öldürene karşı", which is too wide for a cell (see i18n.rs).
-                "katiline karşı",
+                "öldürene karşı",
             ),
         ];
         for (r, lang, long, short) in expect {
@@ -14686,7 +14741,7 @@ mod tests {
             assert_eq!(text, long);
             let w = text_width(&ctx, &text, FontId::proportional(11.5));
             assert!(w <= row, "{lang:?} {text:?} needs {w:.1} points of {row}");
-            let text = cell_reason_text(lang, &sd, r);
+            let text = cell_reason_text(lang, &sd, r, None);
             assert_eq!(text, short);
             let w = text_width(&ctx, &text, advice_reason_font());
             assert!(
@@ -14734,7 +14789,7 @@ mod tests {
                         texts.iter().any(|t| t.contains(name.as_str())),
                         "{lang:?}: {name} is missing in {texts:?}"
                     );
-                    let why = cell_reason_text(lang, &sd, p.reason);
+                    let why = cell_reason_text(lang, &sd, p.reason, a.ctx.as_ref());
                     assert!(
                         texts.contains(&why),
                         "{lang:?}: {why:?} is missing in {texts:?}"

@@ -493,12 +493,16 @@ table! {
     ReasonVsAp = "vs {0} AP", "{0} AP’ye karşı";
     ReasonVsAd = "vs {0} AD", "{0} AD’ye karşı";
     ReasonAntiHeal = "vs {0} healers", "{0} iyileştirene karşı";
-    // `ReasonAntiHeal` for one healer: the rule fires for one healer only when it is the fed enemy.
-    // Turkish keeps "fed" as players say it. The cell of the overlay has the shorter form below.
+    // `ReasonAntiHeal` for one healer that is not the fed enemy now (the rule holds while it stays ahead).
+    ReasonAntiHeal1 = "vs 1 healer", "1 iyileştirene karşı";
+    // `ReasonAntiHeal` for one healer that is the fed enemy now. Turkish keeps "fed" as players say
+    // it. The cell of the overlay has the shorter form below.
     ReasonAntiHealFed = "vs a fed healer", "fed iyileştirene karşı";
     // `ReasonAntiHealFed` in a cell of the overlay (90 points).
-    ReasonAntiHealFedCell = "vs a fed healer", "fed iyileştiren";
+    ReasonAntiHealFedCell = "vs a fed healer", "fed, iyileştiriyor";
     ReasonVsTanks = "vs {0} tanks", "{0} tanka karşı";
+    // `ReasonVsTanks` when the rule holds with one tank.
+    ReasonVsTank1 = "vs 1 tank", "1 tanka karşı";
     ReasonPairs = "pairs with {0}", "{0} ile uyumlu";
     // `ReasonPairs` when Hexsight has no name for the partner augment.
     ReasonPairsEarlier = "pairs with an earlier pick", "önceki seçiminle uyumlu";
@@ -540,11 +544,11 @@ table! {
     ReasonVsFedCell = "{0} {1}", "{0} {1}";
     // F2: the build kind of the fed enemy in the context line ("Fed: Caitlyn 9/1/4 · 3 crit items").
     // {0} is a count. Several kind parts join with ", ".
-    CtxKindCrit = "{0} crit items", "{0} kritik eşyası";
+    CtxKindCrit = "{0} crit items", "{0} krit eşyası";
     CtxKindAp = "{0} AP items", "{0} AP eşyası";
     CtxKindAd = "{0} AD items", "{0} AD eşyası";
     CtxKindTank = "{0} resist items", "{0} direnç eşyası";
-    CtxKindHeals = "heals", "iyileşiyor";
+    CtxKindHeals = "heals", "iyileştiriyor";
     // F4: the tooltip line of the summary card. {0} is your armor, {1} your magic resist.
     TipMyStats = "You: {0} armor · {1} magic resist", "Sen: {0} zırh · {1} büyü direnci";
     // F5: the recap line while dead. {0} is one name, or the names joined with `JoinAnd` or ", ".
@@ -556,8 +560,8 @@ table! {
     ReasonVsKiller = "{0} killed you", "Seni {0} öldürdü";
     ReasonVsKillerN = "{0} killed you {1} times", "{0} seni {1} kez öldürdü";
     // `ReasonVsKiller` in a cell of the overlay.
-    // "seni öldürene karşı" needs 94 of the 90 points of a cell; "katiline karşı" says the same.
-    ReasonVsKillerCell = "vs your killer", "katiline karşı";
+    // "seni öldürene karşı" needs 94 of the 90 points of a cell; "öldürene karşı" fits and matches the row text.
+    ReasonVsKillerCell = "vs your killer", "öldürene karşı";
     // F6: the short word after the enemy faces in an overlay cell.
     CellTanky = "tanky", "tank";
     CellAntiHeal = "anti-heal", "ağır yara";
@@ -570,8 +574,10 @@ table! {
     CellMore = "+{0}", "+{0}";
     // F6: the reason of a team rule on an item row, with the names. {0} is the joined names.
     ReasonTanksNamed = "{0} are tanky", "{0} tank";
-    ReasonHealersNamed = "{0} heal", "{0} iyileşiyor";
-    ReasonFedHealerNamed = "{0} is fed and heals", "{0} fed, iyileşiyor";
+    ReasonHealersNamed = "{0} heal", "{0} iyileştiriyor";
+    ReasonFedHealerNamed = "{0} is fed and heals", "{0} fed, iyileştiriyor";
+    // One healer that is not the fed enemy now.
+    ReasonHealerNamed = "{0} heals", "{0} iyileştiriyor";
     // {1} is the share (70% in English, %70 in Turkish).
     ReasonVsApNamed = "{0}: {1} AP", "{0}: {1} AP";
     ReasonVsAdNamed = "{0}: {1} AD", "{0}: {1} AD";
@@ -1261,11 +1267,11 @@ mod tests {
         (Key::SuggestPath, "On your {0} path", "{0} yolundasın"),
         (Key::ReasonVsFed, "vs fed {0} ({1})", "Fed rakip: {0} ({1})"),
         (Key::ReasonVsFedCell, "{0} {1}", "{0} {1}"),
-        (Key::CtxKindCrit, "{0} crit items", "{0} kritik eşyası"),
+        (Key::CtxKindCrit, "{0} crit items", "{0} krit eşyası"),
         (Key::CtxKindAp, "{0} AP items", "{0} AP eşyası"),
         (Key::CtxKindAd, "{0} AD items", "{0} AD eşyası"),
         (Key::CtxKindTank, "{0} resist items", "{0} direnç eşyası"),
-        (Key::CtxKindHeals, "heals", "iyileşiyor"),
+        (Key::CtxKindHeals, "heals", "iyileştiriyor"),
         (
             Key::TipMyStats,
             "You: {0} armor · {1} magic resist",
@@ -1283,11 +1289,11 @@ mod tests {
             "{0} killed you {1} times",
             "{0} seni {1} kez öldürdü",
         ),
-        (Key::ReasonVsKillerCell, "vs your killer", "katiline karşı"),
+        (Key::ReasonVsKillerCell, "vs your killer", "öldürene karşı"),
         (
             Key::ReasonAntiHealFedCell,
             "vs a fed healer",
-            "fed iyileştiren",
+            "fed, iyileştiriyor",
         ),
         (Key::CellTanky, "tanky", "tank"),
         (Key::CellAntiHeal, "anti-heal", "ağır yara"),
@@ -1297,11 +1303,14 @@ mod tests {
         (Key::CellFed, "fed {0}", "fed {0}"),
         (Key::CellMore, "+{0}", "+{0}"),
         (Key::ReasonTanksNamed, "{0} are tanky", "{0} tank"),
-        (Key::ReasonHealersNamed, "{0} heal", "{0} iyileşiyor"),
+        (Key::ReasonHealersNamed, "{0} heal", "{0} iyileştiriyor"),
+        (Key::ReasonHealerNamed, "{0} heals", "{0} iyileştiriyor"),
+        (Key::ReasonAntiHeal1, "vs 1 healer", "1 iyileştirene karşı"),
+        (Key::ReasonVsTank1, "vs 1 tank", "1 tanka karşı"),
         (
             Key::ReasonFedHealerNamed,
             "{0} is fed and heals",
-            "{0} fed, iyileşiyor",
+            "{0} fed, iyileştiriyor",
         ),
         (Key::ReasonVsApNamed, "{0}: {1} AP", "{0}: {1} AP"),
         (Key::ReasonVsAdNamed, "{0}: {1} AD", "{0}: {1} AD"),
