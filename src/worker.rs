@@ -1355,7 +1355,7 @@ struct Prev {
 /// The path, the fed enemy and the team rules of the last advice. All `None` without one.
 fn prev_of(last: Option<&Advice>) -> Prev {
     Prev {
-        path: last.and_then(|a| a.path),
+        path: last.and_then(|a| a.path_state),
         fed: last.and_then(|a| a.fed_rule),
         rules: last.map(|a| a.rules),
     }
@@ -3563,7 +3563,8 @@ WindowMode=2
     #[test]
     fn the_last_advice_gives_the_previous_path_fed_and_rules() {
         let last = Advice {
-            path: Some(3),
+            path: None,
+            path_state: Some(3),
             fed_rule: Some(51),
             rules: suggest::RuleState {
                 vs_ap: true,

@@ -30,13 +30,33 @@ pub struct Killer {
 /// The recap of a death between two rosters. All must hold:
 /// - you are alive in `before` and dead in `now`;
 /// - `now.me().deaths == before.me().deaths + 1`;
-/// - at least one enemy has more kills in `now` than in `before`.
+/// - exactly one enemy has more kills in `now` than in `before`;
+/// - no ally (you left out) has more deaths in `now` than in `before`.
 ///
-/// The killers are the enemies whose kills rose, sorted by id. An enemy counts only with a known
-/// champion that is in both rosters.
+/// Several risers, or an ally that died in the same window, give `None`: one of the names would be
+/// the killer of a teammate, so Hexsight names nobody. An enemy counts only with a known champion
+/// that is in both rosters.
 pub fn death_recap(before: &Roster, now: &Roster) -> Option<Recap> {
     let (was, is) = (before.me(), now.me());
     if was.dead || !is.dead || is.deaths != was.deaths.saturating_add(1) {
+        return None;
+    }
+    let side = is.side;
+    let ally_died = now
+        .players
+        .iter()
+        .enumerate()
+        .filter(|&(i, p)| i != now.me && p.side == side)
+        .any(|(_, p)| {
+            before
+                .players
+                .iter()
+                .enumerate()
+                .filter(|&(i, _)| i != before.me)
+                .find(|(_, b)| b.side == side && b.champion == p.champion)
+                .is_some_and(|(_, b)| p.deaths > b.deaths)
+        });
+    if ally_died {
         return None;
     }
     let mut killers: Vec<i64> = now
@@ -52,7 +72,7 @@ pub fn death_recap(before: &Roster, now: &Roster) -> Option<Recap> {
         .collect();
     killers.sort_unstable();
     killers.dedup();
-    (!killers.is_empty()).then_some(Recap { killers })
+    (killers.len() == 1).then_some(Recap { killers })
 }
 
 /// The recap state of one game. The worker keeps one in `Shared`, calls `observe` on each new
@@ -87,6 +107,12 @@ impl Tracker {
             return;
         };
         if now.saturating_duration_since(at) > FRESH {
+            return;
+        }
+        // The list can show you dead one read before your deaths go up: keep the alive roster for
+        // the next dead one.
+        if r.me().deaths == before.me().deaths {
+            self.last_alive = Some((before, at));
             return;
         }
         self.current = death_recap(&before, r);
@@ -203,18 +229,39 @@ mod tests {
     fn two_risers_give_no_named_killer() {
         let before = real();
         let now = die(&kill(&kill(&before, CAITLYN), AMUMU));
-        assert_eq!(
-            death_recap(&before, &now),
-            Some(Recap {
-                killers: vec![AMUMU, CAITLYN]
-            })
-        );
+        // One of the two killed a teammate: no name, no recap line.
+        assert_eq!(death_recap(&before, &now), None);
         let mut t = Tracker::default();
         let t0 = Instant::now();
         t.observe(&before, t0);
         t.observe(&now, t0 + Duration::from_secs(1));
-        assert_eq!(t.recap().map(|r| r.killers.len()), Some(2));
-        assert_eq!(t.killer(), None);
+        assert_eq!((t.recap(), t.killer()), (None, None));
+    }
+
+    #[test]
+    fn an_ally_death_in_the_same_window_gives_no_named_killer() {
+        let before = real();
+        let me = before.me;
+        let side = before.me().side;
+        let ally = (0..before.players.len())
+            .find(|&i| i != me && before.players[i].side == side)
+            .unwrap();
+        // Caitlyn's kill went to a teammate; a tower took you.
+        let mut now = die(&kill(&before, CAITLYN));
+        now.players[ally].deaths += 1;
+        assert_eq!(death_recap(&before, &now), None);
+        let mut t = Tracker::default();
+        let t0 = Instant::now();
+        t.observe(&before, t0);
+        t.observe(&now, t0 + Duration::from_secs(1));
+        assert_eq!((t.recap(), t.killer()), (None, None));
+        // An enemy death in the window does not matter.
+        let enemy = (0..before.players.len())
+            .find(|&i| before.players[i].side != side && before.players[i].champion != CAITLYN)
+            .unwrap();
+        let mut now = die(&kill(&before, CAITLYN));
+        now.players[enemy].deaths += 1;
+        assert!(death_recap(&before, &now).is_some());
     }
 
     #[test]
@@ -246,6 +293,22 @@ mod tests {
         t.observe(&dead, t0);
         t.observe(&now, t0 + Duration::from_secs(1));
         assert_eq!((t.recap(), t.killer()), (None, None));
+    }
+
+    #[test]
+    fn a_dead_read_before_the_death_count_keeps_the_alive_roster() {
+        let before = real();
+        let mut early = before.clone();
+        let me = early.me;
+        early.players[me].dead = true;
+        let now = die(&kill(&before, CAITLYN));
+        let mut t = Tracker::default();
+        let t0 = Instant::now();
+        t.observe(&before, t0);
+        t.observe(&early, t0 + Duration::from_secs(1));
+        assert_eq!(t.recap(), None);
+        t.observe(&now, t0 + Duration::from_secs(2));
+        assert_eq!(t.recap().map(|r| r.killers.clone()), Some(vec![CAITLYN]));
     }
 
     #[test]

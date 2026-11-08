@@ -55,7 +55,10 @@ impl Rules {
     /// - VsAp and VsAd switch on at `MIX_RULE_PCT` (60). A rule that was on stays on down to
     ///   `MIX_OFF_PCT` (50), and goes off below it.
     /// - Healers and tanks switch on at `RULE_MIN_COUNT` (2; healers also with one healer that is
-    ///   the fed enemy). A rule that was on stays on with one less.
+    ///   the fed enemy). The tank rule that was on stays on with one less.
+    /// - The healer rule with one healer stays on only while that healer is the fed enemy, or was on
+    ///   and the healer still has kills - deaths >= `FED_KEEP_NET`. So it never holds for the whole
+    ///   game for a healer that is no longer fed.
     pub(super) fn of(ctx: Option<&GameContext>, prev: Option<RuleState>) -> Self {
         let Some(c) = ctx else { return Self::default() };
         let prev = prev.unwrap_or_default();
@@ -64,15 +67,22 @@ impl Rules {
             n >= 1 && (n >= RULE_MIN_COUNT || (was && n + 1 >= RULE_MIN_COUNT))
         };
         let fed_healer = c.fed.is_some_and(|f| c.healers.contains(&f.champion));
+        // A healer that was the reason of the rule and is still ahead (the fed hysteresis).
+        let kept_healer = prev.healers
+            && c.healers.iter().any(|&h| {
+                c.foes.iter().any(|f| {
+                    f.champion == h && i32::from(f.kills) - i32::from(f.deaths) >= FED_KEEP_NET
+                })
+            });
         Rules {
             vs_ap: c.ap_pct.filter(|&ap| mix(ap, prev.vs_ap)),
             vs_ad: c
                 .ap_pct
                 .map(|ap| 100 - ap)
                 .filter(|&ad| mix(ad, prev.vs_ad)),
-            // Two healers, or one healer that is the fed enemy.
+            // Two healers, or one healer that is (or stays) the fed enemy.
             healers: Some(c.healers.len())
-                .filter(|&n| count(n, prev.healers) || (n >= 1 && fed_healer))
+                .filter(|&n| n >= RULE_MIN_COUNT || (n >= 1 && (fed_healer || kept_healer)))
                 .map(|n| n.min(255) as u8),
             tanks: Some(c.tanks.len())
                 .filter(|&n| count(n, prev.tanks))
@@ -712,7 +722,7 @@ mod tests {
     }
 
     #[test]
-    fn tanks_and_healers_stay_on_with_one_less() {
+    fn tanks_stay_on_with_one_less_and_one_calm_healer_does_not() {
         let all_on = RuleState {
             vs_ap: false,
             vs_ad: false,
@@ -721,12 +731,36 @@ mod tests {
         };
         let on = rules(&ctx(None, 2, 2), None);
         assert_eq!((on.healers, on.tanks), (Some(2), Some(2)));
+        // One tank holds the tank rule. One healer that is not ahead does not hold the healer rule.
         let held = rules(&ctx(None, 1, 1), Some(all_on));
-        assert_eq!((held.healers, held.tanks), (Some(1), Some(1)));
+        assert_eq!((held.healers, held.tanks), (None, Some(1)));
         let off = rules(&ctx(None, 1, 1), Some(RuleState::default()));
         assert_eq!((off.healers, off.tanks), (None, None));
         let none = rules(&ctx(None, 0, 0), Some(all_on));
         assert_eq!((none.healers, none.tanks), (None, None));
+    }
+
+    #[test]
+    fn the_one_healer_rule_releases_when_the_healer_is_no_longer_fed() {
+        const SORAKA: i64 = 6;
+        let healers_on = RuleState {
+            healers: true,
+            ..Default::default()
+        };
+        // Soraka is fed (8/1) and the only healer, so the rule fires.
+        let soraka = |k: u16, d: u16| scored_enemy(SORAKA, &[], k, d, 0);
+        let fed = team(vec![soraka(8, 1)], None);
+        assert_eq!(fed.healers, vec![SORAKA]);
+        assert_eq!(fed.fed.map(|f| f.champion), Some(SORAKA));
+        assert_eq!(rules(&fed, None).healers, Some(1));
+        // 8/4: no longer fed, but net 4 holds the rule of the last pass.
+        let ahead = team(vec![soraka(8, 4)], None);
+        assert!(ahead.fed.is_none());
+        assert_eq!(rules(&ahead, Some(healers_on)).healers, Some(1));
+        assert_eq!(rules(&ahead, None).healers, None);
+        // 8/6: net 2, the rule goes off and does not latch.
+        let behind = team(vec![soraka(8, 6)], None);
+        assert_eq!(rules(&behind, Some(healers_on)).healers, None);
     }
 
     #[test]

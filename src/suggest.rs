@@ -625,6 +625,10 @@ pub struct Advice {
     /// The index of the build path that you follow, when the path tracker is sure of it. The worker
     /// passes it back as `Input::prev_path`. No weight of the path is here.
     pub path: Option<u16>,
+    /// The index of the path that drove the card, also when the tracker is not sure enough to name
+    /// it (`path` is `None` then). The worker passes it back as `Input::prev_path`, so the hysteresis
+    /// lasts past one pass. An index only, no weight. Not in `signature`.
+    pub path_state: Option<u16>,
     /// The item that names the path on the card ("On your Malignance path").
     pub path_item: Option<i64>,
     /// Up to two items after the picks ("Then: X → Y"). Not in `signature`.
@@ -1157,10 +1161,13 @@ fn rank(input: &Input) -> Ranking {
     // The injects: a rule adds an item when the candidates lack one of its kind. At most
     // `MAX_INJECTS` in one pass, in the order killer, fed, healer, mix, and one for each resist bit.
     let mut injects = 0;
+    // Only a candidate that keeps `MIN_SCORE` with the bonus of the bit counts: a weak one that
+    // falls out later must not block the inject.
     let has_resist = |cands: &HashMap<i64, Cand>, bit: u16| {
-        cands.keys().any(|&id| {
-            info(id).is_some_and(|i| i.cats & bit != 0 && i.tags <= MAX_RULE_TAGS)
-                && fate(id) == Fate::Stays
+        cands.values().any(|c| {
+            info(c.id).is_some_and(|i| i.cats & bit != 0 && i.tags <= MAX_RULE_TAGS)
+                && fate(c.id) == Fate::Stays
+                && c.base + pass.bonus(bit) >= MIN_SCORE
         })
     };
     let inject_resist = |cands: &mut HashMap<i64, Cand>, t: &Trigger, injects: &mut usize| {
@@ -1267,12 +1274,17 @@ fn rank(input: &Input) -> Ranking {
             .map(|h| h.points)
             .max()
             .unwrap_or(0);
-        let rule: i32 = resist_points
+        let mut rule: i32 = resist_points
             + hits
                 .iter()
                 .filter(|h| !h.resist)
                 .map(|h| h.points)
                 .sum::<i32>();
+        // The score ceiling: with no finished item, the rules never lift an item under
+        // `CORE_BASE` to Core(1) or above (an anti-heal item with armor, for example).
+        if finished == 0 && score < CORE_BASE {
+            rule = rule.min(CORE_BASE - 1 - score);
+        }
         score += rule;
         // Augment links: a known augment adds more than an offered one. A link is the share of the players
         // with the augment who buy the item. The win rate of the pair is not read.
@@ -1416,6 +1428,7 @@ pub fn advise(input: &Input) -> Advice {
     wanted.dedup();
     out.wanted = wanted;
     out.path = ranking.path.as_ref().and_then(|p| p.path);
+    out.path_state = ranking.path.as_ref().and_then(|p| p.driving);
     out.path_item = ranking.path.as_ref().and_then(|p| p.item);
     let picks: Vec<i64> = out.items.iter().map(|p| p.id).collect();
     out.plan = path::plan(input, build, ranking.path.as_ref(), &picks);
@@ -2188,6 +2201,40 @@ mod tests {
         let mut i = input_of(&[], &mixed, &sd);
         i.ctx = Some(&two);
         assert!(rank(&i).scored.iter().all(|s| !is_anti_heal(s.id)));
+    }
+
+    #[test]
+    fn an_anti_heal_inject_with_armor_never_beats_core_1_on_an_empty_inventory() {
+        let sd = sd();
+        // A tank build with a magic resist core, two healers and a 70% AD team. Thornmail comes in for
+        // the healers and also gets the armor hit: 50 + 30 + 28 would be 108.
+        let tank = with_build("tank", &[3065, 4401, 2504], &[]);
+        let hot = ctx(Some(30), 2, 0);
+        let mut i = input_of(&[], &tank, &sd);
+        i.ctx = Some(&hot);
+        let r = rank(&i);
+        assert!(score_of(&r, 3075).is_some_and(|s| s < CORE_BASE));
+        assert!(r.scored.iter().all(|s| s.id == 3065 || s.score < CORE_BASE));
+        let a = advise(&i);
+        assert_eq!((a.items[0].id, a.items[0].reason), (3065, Reason::Core(1)));
+        // With a finished item, the rule points add up as before.
+        let mut i = input_of(&[3089], &tank, &sd);
+        i.ctx = Some(&hot);
+        assert!(score_of(&rank(&i), 3075).is_some_and(|s| s > CORE_BASE));
+    }
+
+    #[test]
+    fn a_resist_candidate_under_the_score_floor_does_not_block_the_inject() {
+        let sd = sd();
+        // Banshee's Veil is only the fifth other-build item: 30 - 8 = 22, and 22 + 16 = 38 < 40.
+        let mut d = with_build("ap", &[2503, 6653, 3089], &[]);
+        d.builds[0].situational = vec![3135, 4645, 3116, 3003, 3102];
+        let ap = ctx(Some(80), 0, 0);
+        let mut i = input_of(&[], &d, &sd);
+        i.ctx = Some(&ap);
+        let r = rank(&i);
+        assert_eq!(score_of(&r, 3102), Some(RESIST_BASE + RESIST_CARRY));
+        assert_eq!(reason_of(&r, 3102), Some(Reason::VsAp(80)));
     }
 
     #[test]
@@ -2995,6 +3042,7 @@ mod tests {
             has_gold: _,
             wanted: _,
             path: _,
+            path_state: _,
             path_item: _,
             plan: _,
             fed_rule: _,

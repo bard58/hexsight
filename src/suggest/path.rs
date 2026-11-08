@@ -26,6 +26,8 @@ const OTHER_PER_ITEM: f64 = 0.05;
 /// The weight from which the top path names itself on the card, and the hysteresis gap.
 const SURE: f64 = 0.55;
 const SWITCH_GAP: f64 = 0.15;
+/// The last path is let go under this weight: you have left it, even when no other path is sure.
+const KEEP_MIN: f64 = 0.25;
 /// The later items: the smallest mixed share, and how many.
 const LATER_MIN: f64 = 0.03;
 const LATER_MAX: usize = 8;
@@ -45,6 +47,9 @@ pub(super) struct PathPick {
     pub(super) cands: Vec<(i64, i32, Reason)>,
     /// `Advice::path`: the index of the top path, only when its weight is 0.55 or more.
     pub(super) path: Option<u16>,
+    /// `Advice::path_state`: the index of the path that drives the card, sure or not. The worker
+    /// passes it back as `Input::prev_path`.
+    pub(super) driving: Option<u16>,
     /// `Advice::path_item`: the core item of the top path that names it on the card.
     pub(super) item: Option<i64>,
     /// The items for `Advice::wanted` in place of the core and later items of the build: the core of
@@ -174,7 +179,8 @@ fn switches(w_top: f64, w_prev: f64) -> bool {
 }
 
 /// The path to follow: the index in `Weighed::paths`. `None` when "other" has the largest weight.
-/// `prev` is `Advice::path` of the last pass (an index in `ChampStats::paths`).
+/// `prev` is `Advice::path_state` of the last pass (an index in `ChampStats::paths`). It is kept
+/// only while its weight is `KEEP_MIN` (0.25) or more.
 fn choose(wd: &Weighed, prev: Option<u16>) -> Option<usize> {
     let mut top = 0;
     for (j, &x) in wd.w.iter().enumerate() {
@@ -187,7 +193,7 @@ fn choose(wd: &Weighed, prev: Option<u16>) -> Option<usize> {
     }
     let prev = prev.and_then(|g| wd.paths.iter().position(|(i, _)| *i == usize::from(g)));
     match prev {
-        Some(j) if j != top && !switches(wd.w[top], wd.w[j]) => Some(j),
+        Some(j) if j != top && wd.w[j] >= KEEP_MIN && !switches(wd.w[top], wd.w[j]) => Some(j),
         _ => Some(top),
     }
 }
@@ -335,6 +341,7 @@ pub(super) fn data_cands(p: &Pass) -> Option<PathPick> {
     Some(PathPick {
         cands,
         path: sure.then(|| u16::try_from(global).ok()).flatten(),
+        driving: u16::try_from(global).ok(),
         item: if sure { path_item(&wd, star) } else { None },
         wanted: top.core.iter().chain(&later).copied().collect(),
         core_left: left,
@@ -397,6 +404,8 @@ pub(super) fn plan(
             break;
         }
     }
+    // The plan never needs more slots than you have left after the next item.
+    out.truncate(6usize.saturating_sub(input.me.items.len() + 1));
     out
 }
 
@@ -578,6 +587,31 @@ mod tests {
         // An unknown last path (another style) is ignored.
         i.prev_path = Some(40);
         assert_eq!(advise(&i).path, Some(P5 as u16));
+        // A path that you left is let go under 0.25, even when the top is not sure.
+        assert_eq!(choose(&hand(0.54, 0.30), Some(P3 as u16)), Some(P3));
+        assert_eq!(choose(&hand(0.54, 0.20), Some(P3 as u16)), Some(P5));
+        assert_eq!(choose(&hand(0.54, 0.01), Some(P3 as u16)), Some(P5));
+    }
+
+    #[test]
+    fn the_driving_path_goes_back_as_path_state_also_when_it_is_not_sure() {
+        let (sd, d) = (sd(), heimer());
+        for owned in [
+            &[3118][..],
+            &[2503, 6653],
+            &[3118, 6653, 3116],
+            &[2503, 6653, 4645, 3089],
+        ] {
+            let held = with_earlier_forms(&sd, owned);
+            let wd = weigh(&d, &sd, &held, 0).unwrap();
+            let star = choose(&wd, None);
+            let a = advise(&input_of(owned, &d, &sd));
+            let global = star.map(|j| wd.paths[j].0 as u16);
+            // The path that drives the card always goes back; the label only from 0.55.
+            assert_eq!(a.path_state, global, "{owned:?}");
+            let sure = star.is_some_and(|j| wd.w[j] >= SURE);
+            assert_eq!(a.path, global.filter(|_| sure), "{owned:?}");
+        }
     }
 
     #[test]
@@ -740,6 +774,15 @@ mod tests {
                 .all(|id| ![6653, 2503, 3116, 3089, 3020].contains(id))
         );
         assert!([3157, 4645, 3165].contains(&plan[0]), "{plan:?}");
+    }
+
+    #[test]
+    fn the_plan_fits_the_free_slots_after_the_next_item() {
+        // P3 complete plus Zhonya's and Void Staff: four items, so one slot after the next item.
+        let four = [6653, 2503, 3116, 3157, 3135];
+        assert_eq!(plan_of(&four[..4], &[3089]).len(), 1);
+        // Five items: the next item fills the last slot, so no plan.
+        assert!(plan_of(&four, &[3089]).is_empty());
     }
 
     #[test]
