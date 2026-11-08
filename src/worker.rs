@@ -666,8 +666,12 @@ fn data_loop(
         {
             next_update = now + update::CHECK_EVERY;
             // A plain GET of the public release data. Nothing else leaves the PC. The cache file also keeps a restart from asking again within the day.
-            let found = cache::get_json(&web, &update::api_url(update::REPO), update::CHECK_EVERY)
-                .and_then(|r| update::newer_tag(&r, update::VERSION));
+            let found = cache::get_json(
+                &web,
+                &update::api_url(update::REPO),
+                update::check_cache_age(),
+            )
+            .and_then(|r| update::newer_tag(&r, &update::current_version()));
             let writable = found.is_none() || exe_folder_writable();
             store_found_update(&shared, found, writable);
             ctx.request_repaint();
@@ -693,6 +697,10 @@ fn update_block(s: &Shared) -> Result<(), update::Blocked> {
 fn store_found_update(shared: &Mutex<Shared>, found: Option<String>, writable: bool) {
     let mut s = shared.lock().unwrap();
     let found_one = found.is_some();
+    #[cfg(feature = "e2e")]
+    if let Some(tag) = &found {
+        crate::e2e::log(&format!("update found tag={tag} writable={writable}"));
+    }
     s.update = found;
     if s.update_state.busy() {
         return;
@@ -703,10 +711,7 @@ fn store_found_update(shared: &Mutex<Shared>, found: Option<String>, writable: b
     } else if !writable {
         s.update_state = update::UpdateState::Failed(update::UpdateError::NotWritable);
         s.update_failed_at = None;
-    } else if matches!(
-        s.update_state,
-        update::UpdateState::Failed(_)
-    ) {
+    } else if matches!(s.update_state, update::UpdateState::Failed(_)) {
         // A new day, a new try: the button comes back. A failure that the player has to
         // read (the old exe could not be put back) stays.
         let stays = matches!(
@@ -783,6 +788,8 @@ fn start_update_with(
         }
         s.update_state = update::UpdateState::Downloading { done: 0, total: 0 };
         s.update_failed_at = None;
+        #[cfg(feature = "e2e")]
+        crate::e2e::state(&s.update_state);
     }
     let _ = data.send(DataCmd::Update);
     ctx.request_repaint();
@@ -805,6 +812,8 @@ fn update_guard(shared: &Mutex<Shared>) -> Result<(), update::UpdateError> {
 }
 
 fn set_update_state(shared: &Mutex<Shared>, ctx: &egui::Context, state: update::UpdateState) {
+    #[cfg(feature = "e2e")]
+    crate::e2e::state(&state);
     {
         let mut s = shared.lock().unwrap();
         s.update_failed_at = matches!(state, update::UpdateState::Failed(_)).then(Instant::now);
@@ -940,7 +949,7 @@ fn try_update(shared: &Mutex<Shared>, ctx: &egui::Context) -> Result<(), update:
     let agent = update_agent();
     let release = fetch_release(&agent)?;
     // The release can change between the daily check and the click.
-    let tag = update::newer_tag(&release, update::VERSION).ok_or(E::UpToDate)?;
+    let tag = update::newer_tag(&release, &update::current_version()).ok_or(E::UpToDate)?;
     let asset = update::pick_asset(&release, &tag, update::REPO).ok_or(E::Asset)?;
     // The hash file first: it is tiny, and a bad one saves the download.
     let mut sha = get_checked(&agent, &asset.sha_url)?;
@@ -1008,6 +1017,8 @@ fn run_update(shared: &Mutex<Shared>, ctx: &egui::Context) {
         // The window saves its settings and closes. If it cannot (no frame runs, for
         // example), this process ends here, so the new copy gets the mutex.
         std::thread::sleep(QUIT_GRACE);
+        #[cfg(feature = "e2e")]
+        crate::e2e::log("exit (data thread, after the update)");
         std::process::exit(0);
     }
 }
@@ -1021,7 +1032,11 @@ fn watch_new_copy(mut child: std::process::Child, ready: Option<&crate::win::Rea
     use update::StartProbe;
     update::wait_for_start(
         || match child.try_wait() {
-            Ok(None) if ready.is_some_and(|r| r.is_set()) => StartProbe::Up,
+            Ok(None) if ready.is_some_and(|r| r.is_set()) => {
+                #[cfg(feature = "e2e")]
+                crate::e2e::log("ready event seen by the old copy");
+                StartProbe::Up
+            }
             Ok(None) => StartProbe::Silent,
             Ok(Some(_)) | Err(_) => StartProbe::Dead,
         },
@@ -1344,6 +1359,12 @@ fn poll_loop(
             sync_sent = true;
             shared.lock().unwrap().importing = true;
             let _ = hist.send(HistoryJob::Sync);
+        }
+
+        // Test build only: the click of "Update now", once, as soon as an update is stored.
+        #[cfg(feature = "e2e")]
+        if crate::e2e::click_due(shared.lock().unwrap().update.is_some()) {
+            start_update(&shared, &data, &ctx);
         }
 
         // 4. Commands from the UI.

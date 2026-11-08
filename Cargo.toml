@@ -22,6 +22,10 @@ ureq = { version = "3.5.0", features = ["json"] }
 windows = { version = "0.62.2", features = ["Media_Ocr", "Graphics_Imaging", "Globalization", "Storage_Streams", "Foundation", "Foundation_Collections", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_Foundation", "Win32_System_WinRT", "Win32_System_StationsAndDesktops"] }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_Graphics_Dwm", "Win32_UI_Controls", "Win32_System_Registry", "Win32_UI_WindowsAndMessaging", "Win32_Security", "Win32_System_ProcessStatus", "Win32_System_Time"] }
 
+[features]
+# Test-only harness for the update button (see src/e2e.rs). Off by default; no workflow enables it.
+e2e = []
+
 [profile.release]
 opt-level = "s"
 lto = true

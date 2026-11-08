@@ -208,7 +208,11 @@ fn wide(s: &str) -> Vec<u16> {
 }
 
 /// The name of the mutex that keeps one copy of Hexsight.
+#[cfg(not(feature = "e2e"))]
 const INSTANCE_MUTEX: &str = r"Local\Hexsight.SingleInstance";
+/// A test build has its own mutex, so it runs next to a real Hexsight.
+#[cfg(feature = "e2e")]
+const INSTANCE_MUTEX: &str = r"Local\Hexsight.SingleInstance.E2E";
 
 /// Try to take the mutex of this name. `Some(handle)` means that this process owns it now
 /// (the handle stays open for the life of the process on purpose). `None` means that
@@ -230,7 +234,9 @@ fn take_mutex(name: &str) -> Option<windows_sys::Win32::Foundation::HANDLE> {
     }
 }
 
-/// Bring the window of the running Hexsight to the front.
+/// Bring the window of the running Hexsight to the front. A test build never does: the
+/// window of the same name could be a real Hexsight.
+#[cfg_attr(feature = "e2e", allow(dead_code))]
 fn focus_running_copy() {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         FindWindowW, SW_RESTORE, SetForegroundWindow, ShowWindow,
@@ -250,6 +256,7 @@ pub fn single_instance() -> bool {
     if take_mutex(INSTANCE_MUTEX).is_some() {
         return true;
     }
+    #[cfg(not(feature = "e2e"))]
     focus_running_copy();
     false
 }
@@ -314,6 +321,11 @@ pub fn signal_ready(old_pid: u32) {
     unsafe {
         let name = wide(&ready_name(old_pid));
         let handle = OpenEventW(EVENT_MODIFY_STATE, 0, name.as_ptr());
+        #[cfg(feature = "e2e")]
+        crate::e2e::log(&format!(
+            "ready event signalled old_pid={old_pid} opened={}",
+            !handle.is_null()
+        ));
         if !handle.is_null() {
             SetEvent(handle);
             CloseHandle(handle);

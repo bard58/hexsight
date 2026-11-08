@@ -21,6 +21,25 @@ pub const CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(24 *
 /// The version of this build.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// The version that the update compare uses: this build's own version. A test build
+/// (feature `e2e`) can set another one with `HEXSIGHT_E2E_VERSION`.
+pub fn current_version() -> String {
+    #[cfg(feature = "e2e")]
+    if let Some(v) = crate::e2e::version() {
+        return v;
+    }
+    VERSION.to_string()
+}
+
+/// How old the cached answer of the releases API may be. A test build never uses the cache.
+pub fn check_cache_age() -> std::time::Duration {
+    if cfg!(feature = "e2e") {
+        std::time::Duration::ZERO
+    } else {
+        CHECK_EVERY
+    }
+}
+
 /// True when `repo` is a real "owner/name" and not the placeholder.
 pub fn repo_ready(repo: &str) -> bool {
     match repo.split_once('/') {
@@ -33,6 +52,10 @@ pub fn repo_ready(repo: &str) -> bool {
 
 /// The URL of the latest release in the API. It is a plain GET with no login.
 pub fn api_url(repo: &str) -> String {
+    #[cfg(feature = "e2e")]
+    if let Some(origin) = crate::e2e::api_origin() {
+        return format!("{origin}/repos/{repo}/releases/latest");
+    }
     format!("https://api.github.com/repos/{repo}/releases/latest")
 }
 
@@ -208,6 +231,10 @@ fn split_https(url: &str) -> Option<(String, &str)> {
 /// True when the URL is the first address of a download: https, host `github.com`,
 /// and a path in the releases of `repo`.
 pub fn download_url_ok(url: &str, repo: &str) -> bool {
+    #[cfg(feature = "e2e")]
+    if crate::e2e::api_origin().is_some_and(|o| crate::e2e::download_ok(url, o, repo)) {
+        return true;
+    }
     let Some((host, tail)) = split_https(url) else {
         return false;
     };
@@ -221,6 +248,10 @@ pub fn download_url_ok(url: &str, repo: &str) -> bool {
 
 /// True when a redirect may go to this URL: https, and one of the GitHub hosts.
 pub fn redirect_ok(url: &str) -> bool {
+    #[cfg(feature = "e2e")]
+    if crate::e2e::api_origin().is_some_and(|o| crate::e2e::url_on_origin(url, o)) {
+        return true;
+    }
     split_https(url).is_some_and(|(host, _)| REDIRECT_HOSTS.contains(&host.as_str()))
 }
 
@@ -228,6 +259,17 @@ pub fn redirect_ok(url: &str) -> bool {
 /// address, a `//host/path` address, and a `/path` address have a meaning.
 pub fn resolve_location(base: &str, location: &str) -> Option<String> {
     let location = location.trim();
+    #[cfg(feature = "e2e")]
+    if let Some(origin) = crate::e2e::api_origin()
+        && crate::e2e::url_on_origin(base, origin)
+    {
+        if crate::e2e::url_on_origin(location, origin) {
+            return Some(location.to_string());
+        }
+        if location.starts_with('/') && !location.starts_with("//") {
+            return Some(format!("{origin}{location}"));
+        }
+    }
     if location.starts_with("https://") {
         Some(location.to_string())
     } else if location.starts_with("//") {
@@ -473,12 +515,16 @@ pub const HEALTHY_RUN: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Delete a half download of an earlier update. It is of no use. Errors are ignored.
 pub fn cleanup_download(exe: &std::path::Path) {
+    #[cfg(feature = "e2e")]
+    crate::e2e::log(&format!("cleanup .new existed={}", new_path(exe).exists()));
     let _ = std::fs::remove_file(new_path(exe));
 }
 
 /// Delete the old exe of an earlier update. Call it only after the new copy has run well
 /// for `HEALTHY_RUN`. Errors are ignored: a file that is still in use goes at a later start.
 pub fn cleanup_old(exe: &std::path::Path) {
+    #[cfg(feature = "e2e")]
+    crate::e2e::log(&format!("cleanup .old existed={}", old_path(exe).exists()));
     let _ = std::fs::remove_file(old_path(exe));
 }
 
@@ -861,6 +907,32 @@ mod tests {
                 asset(&exe, &dl(&exe), 6_000_000, "uploaded"),
             ]
         })
+    }
+
+    #[cfg(not(feature = "e2e"))]
+    #[test]
+    fn the_e2e_variables_have_no_effect_without_the_feature() {
+        // Without the feature nothing reads these variables.
+        unsafe {
+            std::env::set_var("HEXSIGHT_E2E_API", "http://127.0.0.1:4000");
+            std::env::set_var("HEXSIGHT_E2E_VERSION", "0.0.1");
+            std::env::set_var("HEXSIGHT_E2E_CLICK", "1");
+            std::env::set_var("HEXSIGHT_E2E_LOG", r"C:\hexsight-e2e-must-not-exist.log");
+        }
+        assert_eq!(current_version(), VERSION);
+        assert_eq!(check_cache_age(), CHECK_EVERY);
+        assert_eq!(
+            api_url("someone/hexsight"),
+            "https://api.github.com/repos/someone/hexsight/releases/latest"
+        );
+        let local = "http://127.0.0.1:4000/someone/hexsight/releases/download/v1/a.exe";
+        assert!(!download_url_ok(local, "someone/hexsight"));
+        assert!(!redirect_ok("http://127.0.0.1:4000/dl/a.exe"));
+        assert_eq!(
+            resolve_location("http://127.0.0.1:4000/a", "/dl/a.exe"),
+            None
+        );
+        assert!(!std::path::Path::new(r"C:\hexsight-e2e-must-not-exist.log").exists());
     }
 
     #[test]
@@ -1265,10 +1337,7 @@ mod tests {
                 std::fs::rename(from, to)
             }
         };
-        assert_eq!(
-            swap_with(&exe, &new, &rename, ZERO),
-            Err(UpdateError::Swap)
-        );
+        assert_eq!(swap_with(&exe, &new, &rename, ZERO), Err(UpdateError::Swap));
         // One rename of the exe, the tries of the move, and one rename back.
         assert_eq!(calls.get(), 1 + RENAME_TRIES + 1);
         assert_eq!(std::fs::read(&exe).unwrap(), b"old");
@@ -1441,7 +1510,11 @@ mod tests {
         let dir = temp_dir("running");
         let exe = dir.join("Hexsight.exe");
         let system = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
-        std::fs::copy(std::path::Path::new(&system).join(r"System32\cmd.exe"), &exe).unwrap();
+        std::fs::copy(
+            std::path::Path::new(&system).join(r"System32\cmd.exe"),
+            &exe,
+        )
+        .unwrap();
         // The shell waits for input that never comes, so it runs until the test ends it.
         let mut child = std::process::Command::new(&exe)
             .stdin(std::process::Stdio::piped())

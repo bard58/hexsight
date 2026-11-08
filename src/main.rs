@@ -5,6 +5,8 @@ mod badges;
 mod cache;
 mod data;
 mod datalog;
+#[cfg(feature = "e2e")]
+mod e2e;
 mod history;
 mod hstats;
 mod i18n;
@@ -103,6 +105,12 @@ fn main() -> eframe::Result {
         ocr_file_test(&p);
         return Ok(());
     }
+    #[cfg(feature = "e2e")]
+    e2e::log(&format!(
+        "started version={} args={:?}",
+        update::current_version(),
+        std::env::args().skip(1).collect::<Vec<_>>()
+    ));
     // A copy that an update started waits for the old copy to end. Then the mutex is free.
     // Without the argument, one copy only: a second start brings the first window to the front.
     let started = match update::parse_updated_from(std::env::args()) {
@@ -116,6 +124,8 @@ fn main() -> eframe::Result {
         None => win::single_instance(),
     };
     if !started {
+        #[cfg(feature = "e2e")]
+        e2e::log("exit (another copy runs)");
         return Ok(());
     }
     // A half download of an earlier update goes now. The old exe stays until this copy has
@@ -182,11 +192,14 @@ fn main() -> eframe::Result {
         run_and_return: false,
         ..Default::default()
     };
-    eframe::run_native(
+    let result = eframe::run_native(
         "Hexsight",
         options,
         Box::new(move |cc| Ok(Box::new(app::App::new(cc, settings)))),
-    )
+    );
+    #[cfg(feature = "e2e")]
+    e2e::log("exit (window closed)");
+    result
 }
 
 #[cfg(test)]
