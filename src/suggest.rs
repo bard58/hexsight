@@ -454,6 +454,8 @@ pub struct ItemPick {
     pub need: u32,
     /// You have the gold. False too when the gold is not known.
     pub ready: bool,
+    /// The part of the item that your gold pays for now, when the item is not ready (`buy_now`).
+    pub part: Option<i64>,
 }
 
 /// The result of `advise`. It holds ids, counts and gold only: no rate of any kind.
@@ -563,6 +565,38 @@ fn gold_need(sd: &StaticData, id: i64, owned: &[i64]) -> u32 {
         .get(&id)
         .map_or(0, |i| i.total)
         .saturating_sub(have)
+}
+
+/// The part to buy now when your gold does not pay for the whole item: the most expensive part of its
+/// recipe tree that you do not own and that your gold pays for. A part that you own is skipped with its
+/// own parts, as in `gold_need`, and the cost of a part is its own need. `None` when no part fits.
+fn buy_now(sd: &StaticData, id: i64, owned: &[i64], gold: u32) -> Option<i64> {
+    fn walk(
+        sd: &StaticData,
+        id: i64,
+        depth: u8,
+        pool: &mut Vec<i64>,
+        gold: u32,
+        best: &mut Option<(u32, i64)>,
+    ) {
+        if depth == 0 {
+            return;
+        }
+        for &part in sd.item_info.get(&id).map_or(&[][..], |i| &i.from[..]) {
+            if let Some(at) = pool.iter().position(|&o| o == part) {
+                pool.swap_remove(at);
+                continue;
+            }
+            let cost = gold_need(sd, part, pool);
+            if cost > 0 && cost <= gold && best.is_none_or(|(c, _)| cost > c) {
+                *best = Some((cost, part));
+            }
+            walk(sd, part, depth - 1, pool, gold, best);
+        }
+    }
+    let (mut pool, mut best) = (owned.to_vec(), None);
+    walk(sd, id, RECIPE_DEPTH, &mut pool, gold, &mut best);
+    best.map(|(_, part)| part)
 }
 
 /// The build that fits what you own: the one with the most items in common with your items (its
@@ -1061,6 +1095,10 @@ pub fn advise(input: &Input) -> Advice {
                 reason: s.reason,
                 need,
                 ready: input.gold.is_some_and(|g| g >= need),
+                part: input
+                    .gold
+                    .filter(|&g| g < need)
+                    .and_then(|g| buy_now(input.sd, s.id, owned, g)),
             }
         })
         .collect();
@@ -2198,6 +2236,42 @@ mod tests {
     }
 
     #[test]
+    fn buy_now_is_the_most_expensive_missing_part_that_the_gold_pays_for() {
+        let sd = sd();
+        // Blackfire Torch (2503): Lost Chapter (3802, 1200) and Fated Ashes (2508, 900, from a Tome).
+        assert_eq!(buy_now(&sd, 2503, &[], 1300), Some(3802));
+        assert_eq!(buy_now(&sd, 2503, &[], 1200), Some(3802));
+        assert_eq!(buy_now(&sd, 2503, &[], 1199), Some(2508));
+        // A gold limit under both: the deeper parts. The Amplifying Tome (1052, 400) is the dearest.
+        assert_eq!(buy_now(&sd, 2503, &[], 450), Some(1052));
+        // An owned part is skipped with its parts: with the Lost Chapter, the ashes or their Tome.
+        assert_eq!(buy_now(&sd, 2503, &[3802], 1000), Some(2508));
+        assert_eq!(buy_now(&sd, 2503, &[3802], 800), Some(1052));
+        // The second Needlessly Large Rod of a Rabadon's Deathcap, when you own the first.
+        assert_eq!(buy_now(&sd, 3089, &[1058], 1300), Some(1058));
+        // No part fits the gold, or the item is not known: nothing.
+        assert_eq!(buy_now(&sd, 2503, &[3802], 300), None);
+        assert_eq!(buy_now(&sd, 3089, &[1058], 1100), None);
+        assert_eq!(buy_now(&sd, 999_999, &[], 5000), None);
+        // In the advice: a part for an item that is not ready, and none for a ready one or without gold.
+        let d = heimer();
+        let mut i = input_of(&[], &d, &sd);
+        i.gold = Some(1300);
+        let a = advise(&i);
+        assert_eq!((a.items[0].id, a.items[0].part), (2503, Some(3802)));
+        i.gold = Some(sd.item_info[&2503].total);
+        assert_eq!(advise(&i).items[0].part, None);
+        i.gold = Some(100);
+        assert_eq!(advise(&i).items[0].part, None);
+        assert!(
+            advise(&input_of(&[], &d, &sd))
+                .items
+                .iter()
+                .all(|p| p.part.is_none())
+        );
+    }
+
+    #[test]
     fn ready_and_short_follow_the_gold() {
         let sd = sd();
         let d = heimer();
@@ -2717,6 +2791,7 @@ mod tests {
                 reason: _,
                 need: _,
                 ready: _,
+                part: _,
             } = p;
         }
         let GameContext {

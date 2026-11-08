@@ -113,8 +113,15 @@ const FETCH_TICK: Duration = Duration::from_secs(5);
 /// The player list (for the item suggestions) is read this often, and at once after a purchase.
 const ROSTER_EVERY: Duration = Duration::from_secs(4);
 
-/// A drop of this much gold between two passes is a purchase: the player list is read at once.
-const PURCHASE_DROP: u32 = 250;
+/// While the player is dead (the shop is open), and for `FAST_AFTER_BUY` after a purchase, the player
+/// list is read on each pass of a game (one each second). The value is a bit under one second, so a
+/// slow request does not skip a pass.
+const ROSTER_FAST: Duration = Duration::from_millis(900);
+const FAST_AFTER_BUY: Duration = Duration::from_secs(10);
+
+/// A drop of this much gold between two passes is a purchase: the player list is read at once. A
+/// 150-gold part counts, also with the gold that a pass brings in.
+const PURCHASE_DROP: u32 = 100;
 
 #[derive(Default, Clone)]
 pub struct Live {
@@ -679,6 +686,9 @@ fn poll_loop(
     // The player list for the suggestions: when it was read last, and the gold of the last pass.
     let mut last_roster: Option<Instant> = None;
     let mut last_gold: Option<u32> = None;
+    // The last player list said that the player is dead, and the time of the last purchase.
+    let mut last_dead = false;
+    let mut last_buy: Option<Instant> = None;
     // The last state of the client connection that went to the log.
     let mut last_link = String::new();
 
@@ -812,19 +822,27 @@ fn poll_loop(
                 on: suggest_runs(now_phase, queue, suggest_on),
                 since_last: last_roster.map(|t| t.elapsed()),
                 gold_before: last_gold,
+                fast: roster_fast(last_dead, last_buy.map(|t| t.elapsed())),
             };
             let read = read_live(&live, sd.as_deref(), !champ_known && picked.is_none(), &ask);
             (live_champ, live_state, new_roster) = (read.champion, read.state, read.roster);
             if read.asked {
                 last_roster = Some(Instant::now());
             }
-            last_gold = live_state.as_ref().and_then(|l| l.gold);
+            if let Some(r) = &new_roster {
+                last_dead = r.me().dead;
+            }
+            let gold = live_state.as_ref().and_then(|l| l.gold);
+            if bought(last_gold, gold) {
+                last_buy = Some(Instant::now());
+            }
+            last_gold = gold;
             if live_champ.is_some() {
                 champ_known = true;
             }
             game_window = Some(ocr::game_window_found());
         } else {
-            (last_roster, last_gold) = (None, None);
+            (last_roster, last_gold, last_dead, last_buy) = (None, None, false, None);
         }
 
         // 3. Publish. Repaint only on change.
@@ -1157,19 +1175,31 @@ pub(crate) fn suggest_runs(phase: Phase, queue: Option<i64>, on: bool) -> bool {
 
 /// Is the player list (the larger request of the Live Client) due in this pass? Only while the
 /// suggestions run (`on`). It is read at once after the first pass of a game (`since_last` is
-/// `None`), every `ROSTER_EVERY`, and at once after a purchase: a fall of `PURCHASE_DROP` gold or
-/// more between two passes.
+/// `None`), every `ROSTER_EVERY` (every `ROSTER_FAST` when `fast`), and at once after a purchase
+/// (`bought`).
 pub(crate) fn roster_due(
     on: bool,
     since_last: Option<Duration>,
     gold_before: Option<u32>,
     gold_now: Option<u32>,
+    fast: bool,
 ) -> bool {
     if !on {
         return false;
     }
-    let bought = matches!((gold_before, gold_now), (Some(before), Some(now)) if before >= now.saturating_add(PURCHASE_DROP));
-    since_last.is_none_or(|d| d >= ROSTER_EVERY) || bought
+    let every = if fast { ROSTER_FAST } else { ROSTER_EVERY };
+    since_last.is_none_or(|d| d >= every) || bought(gold_before, gold_now)
+}
+
+/// A purchase: a fall of `PURCHASE_DROP` gold or more between two passes.
+pub(crate) fn bought(gold_before: Option<u32>, gold_now: Option<u32>) -> bool {
+    matches!((gold_before, gold_now), (Some(before), Some(now)) if before >= now.saturating_add(PURCHASE_DROP))
+}
+
+/// Is the player list read on each pass? While the last list says that the player is dead, and for
+/// `FAST_AFTER_BUY` after a purchase (`since_buy`): then the player shops, and the items change.
+pub(crate) fn roster_fast(dead: bool, since_buy: Option<Duration>) -> bool {
+    dead || since_buy.is_some_and(|d| d < FAST_AFTER_BUY)
 }
 
 /// What `read_live` needs to know about the player list.
@@ -1180,6 +1210,8 @@ struct RosterAsk {
     since_last: Option<Duration>,
     /// The gold of the pass before.
     gold_before: Option<u32>,
+    /// Read on each pass (`roster_fast`).
+    fast: bool,
 }
 
 /// What one pass of the Live Client gave.
@@ -1210,7 +1242,7 @@ fn read_live(
         level: me["level"].as_i64().unwrap_or(0),
         gold,
     });
-    let due = roster_due(ask.on, ask.since_last, ask.gold_before, gold);
+    let due = roster_due(ask.on, ask.since_last, ask.gold_before, gold, ask.fast);
     let Some(sd) = sd.filter(|_| want_champ || due) else {
         return LiveRead {
             state,
@@ -3146,26 +3178,58 @@ WindowMode=2
     fn the_roster_is_asked_every_four_seconds_and_at_once_after_a_purchase() {
         let secs = |s: u64| Some(Duration::from_secs(s));
         // The first pass of a game asks.
-        assert!(roster_due(true, None, None, Some(500)));
+        assert!(roster_due(true, None, None, Some(500), false));
         // After it, every four seconds.
-        assert!(!roster_due(true, secs(3), Some(500), Some(520)));
-        assert!(roster_due(true, secs(4), Some(500), Some(520)));
+        assert!(!roster_due(true, secs(3), Some(500), Some(520), false));
+        assert!(roster_due(true, secs(4), Some(500), Some(520), false));
         assert_eq!(ROSTER_EVERY, Duration::from_secs(4));
-        // A fall of 250 gold or more between two passes is a purchase: ask at once.
-        assert!(roster_due(true, secs(1), Some(1300), Some(1050)));
-        assert!(!roster_due(true, secs(1), Some(1300), Some(1051)));
-        assert_eq!(PURCHASE_DROP, 250);
+        // A fall of 100 gold or more between two passes is a purchase: ask at once. A 150-gold part
+        // counts, also with some gold that came in during the pass.
+        assert!(roster_due(true, secs(1), Some(1300), Some(1200), false));
+        assert!(!roster_due(true, secs(1), Some(1300), Some(1201), false));
+        assert!(roster_due(
+            true,
+            secs(1),
+            Some(1000),
+            Some(1000 - 150 + 3),
+            false
+        ));
+        assert_eq!(PURCHASE_DROP, 100);
         // Gold that rises, or gold that is not known, is no purchase.
-        assert!(!roster_due(true, secs(1), Some(100), Some(900)));
-        assert!(!roster_due(true, secs(1), None, Some(10)));
-        assert!(!roster_due(true, secs(1), Some(1000), None));
+        assert!(!roster_due(true, secs(1), Some(100), Some(900), false));
+        assert!(!roster_due(true, secs(1), None, Some(10), false));
+        assert!(!roster_due(true, secs(1), Some(1000), None, false));
+    }
+
+    #[test]
+    fn the_roster_is_asked_each_second_while_dead_or_right_after_a_purchase() {
+        let secs = |s: u64| Some(Duration::from_secs(s));
+        let ms = |m: u64| Some(Duration::from_millis(m));
+        // Fast: each pass of a game, about one second apart. A pass a bit early still asks.
+        assert!(roster_due(true, secs(1), Some(500), Some(520), true));
+        assert!(roster_due(true, ms(950), Some(500), Some(520), true));
+        assert!(!roster_due(true, ms(500), Some(500), Some(520), true));
+        assert!(!roster_due(true, secs(1), Some(500), Some(520), false));
+        // Off is off, fast or not.
+        assert!(!roster_due(false, secs(60), Some(500), Some(520), true));
+        // Fast while the last list says dead, and for ten seconds after a purchase.
+        assert!(roster_fast(true, None));
+        assert!(roster_fast(false, secs(0)));
+        assert!(roster_fast(false, secs(9)));
+        assert!(!roster_fast(false, secs(10)));
+        assert!(!roster_fast(false, None));
+        assert_eq!(FAST_AFTER_BUY, Duration::from_secs(10));
+        // A purchase is a fall of gold, not a rise.
+        assert!(bought(Some(900), Some(750)));
+        assert!(!bought(Some(750), Some(900)));
+        assert!(!bought(None, Some(10)));
     }
 
     #[test]
     fn no_roster_is_asked_when_the_suggestions_are_off() {
         // With every suggestion setting off, no pass asks, whatever the time and the gold say.
         for since in [None, Some(Duration::from_secs(60))] {
-            assert!(!roster_due(false, since, Some(2000), Some(10)));
+            assert!(!roster_due(false, since, Some(2000), Some(10), false));
         }
         assert!(!suggest_runs(Phase::InGame, Some(2400), false));
     }

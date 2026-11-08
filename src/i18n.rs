@@ -489,6 +489,10 @@ table! {
     ReasonPairs = "pairs with {0}", "{0} ile uyumlu";
     // `ReasonPairs` when Hexsight has no name for the partner augment.
     ReasonPairsEarlier = "pairs with an earlier pick", "önceki seçiminle uyumlu";
+    // `ReasonPairs` in a cell of the overlay: the cell has no room for the name of the augment.
+    ReasonPairsShort = "fits an augment", "eklentiyle uyumlu";
+    // The line under an item that your gold does not pay for yet. {0} is the part that the gold pays for now.
+    PartNow = "Affordable now: {0}", "Şimdi alınabilir: {0}";
     TipReasonData = "From build data.", "Dizilim verisinden.";
     TipReasonRule = "Hexsight's own rule, not statistics.", "Hexsight’ın kendi kuralı, istatistik değil.";
     TipPairsOffered = "This augment was offered to you. Hexsight can't know if you took it.", "Bu eklenti sana sunuldu. Seçip seçmediğini Hexsight bilemez.";
@@ -1033,6 +1037,8 @@ mod tests {
             Key::SuggestNone,
             Key::ReasonCore,
             Key::ReasonPairs,
+            Key::ReasonPairsShort,
+            Key::PartNow,
             Key::FitLine,
         ] {
             let text = Lang::En.t(key).to_lowercase();
